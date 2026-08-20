@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -57,6 +58,14 @@ GpuState query_gpu_state() {
 Result run(const std::string& kernel, const std::string& dims,
            const std::function<void()>& launch, int warmup, int iters,
            const std::string& gemm_path) {
+    // Smoke mode (BENCH_SMOKE=1): one warmup, one rep. For sanitizer runs, where
+    // timings are meaningless and 60 instrumented reps just burn minutes (or get
+    // the process OOM-killed under racecheck's 10-100x overhead).
+    if (const char* s = std::getenv("BENCH_SMOKE"); s && s[0] == '1') {
+        warmup = 1;
+        iters = 1;
+    }
+
     Result r;
     r.kernel = kernel;
     r.dims = dims;
@@ -111,6 +120,10 @@ Result run(const std::string& kernel, const std::string& dims,
 }
 
 std::string write_record(const Result& r, const std::string& out_dir) {
+    // Smoke-mode timings are not benchmarks; never record them.
+    if (const char* s = std::getenv("BENCH_SMOKE"); s && s[0] == '1') {
+        return "(smoke mode: record not written)";
+    }
     std::string commit = exec_capture("git rev-parse HEAD 2>/dev/null");
     bool dirty = system("git diff --quiet 2>/dev/null") != 0;
     if (dirty) {

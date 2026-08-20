@@ -46,7 +46,7 @@ case "${1:-status}" in
     ;;
   status)
     echo "current clocks / temp:"
-    run_smi --query-gpu=clocks.sm,clocks.memory,temperature.gpu,name --format=csv
+    run_smi --query-gpu=clocks.sm,clocks.mem,temperature.gpu,name --format=csv
     ;;
   *)
     echo "usage: $0 lock|unlock|status" >&2

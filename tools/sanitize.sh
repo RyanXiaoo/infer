@@ -23,6 +23,12 @@ if [[ $# -lt 1 ]]; then echo "usage: $0 [--quick] <binary> [args...]" >&2; exit 
 TOOLS=(memcheck initcheck synccheck)
 if [[ $QUICK -eq 0 ]]; then TOOLS=(memcheck racecheck initcheck synccheck); fi
 
+# Project convention: binaries using the bench harness honor BENCH_SMOKE=1
+# (one warmup + one rep per kernel). Timings are meaningless under a sanitizer,
+# and racecheck's 10-100x overhead on a full 60-rep suite can run for minutes
+# or get OOM-killed inside the WSL VM.
+export BENCH_SMOKE=1
+
 FAILED=0
 for tool in "${TOOLS[@]}"; do
     echo "=== compute-sanitizer --tool $tool $* ==="
