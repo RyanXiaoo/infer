@@ -1,0 +1,22 @@
+{
+  "kernel": "matmul_naive",
+  "dims": "N1024",
+  "gemm_path": "n/a",
+  "median_ms": 0.813008,
+  "min_ms": 0.79488,
+  "max_ms": 1.00746,
+  "warmup_iters": 10,
+  "timed_iters": 50,
+  "commit": "e1100e2d02a24bb90a9bd10bcaec29e1dae818a5",
+  "dirty": false,
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "591.86",
+  "cuda_toolkit": 13030,
+  "sm_clock_mhz_before": 2535,
+  "sm_clock_mhz_after": 2535,
+  "mem_clock_mhz": 13801,
+  "temp_c_before": 39,
+  "temp_c_after": 39,
+  "clock_stable": true,
+  "model": null
+}
