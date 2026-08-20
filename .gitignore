@@ -1,0 +1,17 @@
+# Build
+build/
+build-*/
+
+# Model weights — never committed
+models/
+
+# Profiler reports (large binaries; bench/ JSON records ARE committed)
+*.ncu-rep
+*.nsys-rep
+*.sqlite
+
+# Editor / OS
+.DS_Store
+.vscode/
+.cache/
+compile_commands.json
