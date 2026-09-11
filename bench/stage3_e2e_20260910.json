@@ -1,0 +1,23 @@
+{
+  "what": "Stage 3 end-to-end generation baseline: CPU vs naive-CUDA vs cuBLAS",
+  "model": "Qwen2.5-0.5B-Instruct (bf16 weights, fp32 activations)",
+  "prompt": "prompt0 (5 tokens), greedy decode, full recompute per token (no KV cache)",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "sm_clock_mhz_locked": 2535,
+  "mem_clock_mhz_locked": 14001,
+  "temp_c": 37,
+  "driver": "591.86",
+  "cuda_toolkit": "13.3",
+  "note_commit": "measured at the Stage 3 working tree (commit recorded in the Stage 3 commit message)",
+  "results": {
+    "cpu":        { "prefill_s": 1.088, "decode_tok_s": 0.572,  "n_decode": 8 },
+    "gpu_mine":   { "prefill_s": 0.035, "decode_tok_s": 15.372, "n_decode": 32 },
+    "gpu_cublas": { "prefill_s": 0.006, "decode_tok_s": 91.927, "n_decode": 32 }
+  },
+  "derived": {
+    "gpu_mine_vs_cpu": "27x decode",
+    "gpu_cublas_vs_cpu": "161x decode",
+    "naive_gemv_vs_cublas_e2e": "~17% (decode is GEMV-dominated; per-shape microbench deferred to Stage 5's roofline harness)"
+  },
+  "outputs_identical_across_all_three_paths": true
+}
