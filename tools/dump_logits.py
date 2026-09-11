@@ -191,11 +191,56 @@ def run_model(dtype: torch.dtype, token_ids: torch.Tensor):
     return arrays, model
 
 
+def dump_greedy(n_new: int = 8) -> None:
+    """Greedy-continuation goldens for Stage 2's milestone E (tests/golden/greedy.json).
+
+    dtype=float32 on purpose: the checkpoint stores bf16 weights, so a float32
+    load is bf16-weights-upcast + fp32 activations — the exact arithmetic the C++
+    engine runs, hence the reference whose argmax chain ours must reproduce (the
+    bf16 model's activations drift enough to flip near-tie argmaxes).
+
+    Manual argmax loop rather than model.generate() so the reference is exactly
+    "forward, take argmax of the last position, append" — the same loop the C++
+    side runs — with no generation-config surprises (eos early-stop, repetition
+    penalty) in between.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_DIR, dtype=torch.float32, attn_implementation="eager"
+    )
+    model.eval()
+
+    entries = []
+    for prompt in PROMPTS:
+        ids = tokenizer(prompt, return_tensors="pt").input_ids
+        cont = []
+        with torch.no_grad():
+            for _ in range(n_new):
+                logits = model(ids, use_cache=False).logits
+                nxt = int(torch.argmax(logits[0, -1]))
+                cont.append(nxt)
+                ids = torch.cat([ids, torch.tensor([[nxt]])], dim=1)
+        entries.append({"prompt": prompt,
+                        "prompt_ids": tokenizer(prompt).input_ids,
+                        "greedy_continuation": cont,
+                        "text": tokenizer.decode(cont)})
+        print(f"{prompt!r} -> {cont} {tokenizer.decode(cont)!r}")
+
+    (OUT / "greedy.json").write_text(json.dumps(
+        {"model": "Qwen/Qwen2.5-0.5B-Instruct", "dtype": "float32",
+         "n_new_tokens": n_new, "prompts": entries}, indent=1))
+    print(f"greedy.json: {len(entries)} prompts x {n_new} tokens")
+
+
 def main() -> None:
     if not MODEL_DIR.exists():
         sys.exit(f"model not found at {MODEL_DIR}; run tools/download_model.py first")
     OUT.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(0)
+
+    if "--greedy" in sys.argv:      # additive mode: never regenerates existing goldens
+        dump_greedy()
+        return
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
     st_path = MODEL_DIR / "model.safetensors"
