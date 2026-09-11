@@ -62,6 +62,26 @@ if(CMAKE_CUDA_COMPILER)
 
   add_executable(warmup_bench kernels/warmup/warmup_bench.cu)
   target_link_libraries(warmup_bench PRIVATE bench_harness)
+
+  # Stage 3: the GPU forward pass (naive kernels + cuBLAS bisection path).
+  add_library(engine_gpu STATIC
+    kernels/model_gpu.cu
+    kernels/ops/embedding.cu
+    kernels/ops/rmsnorm.cu
+    kernels/ops/linear.cu
+    kernels/ops/rope.cu
+    kernels/ops/attention.cu
+    kernels/ops/elementwise.cu)
+  target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
+
+  add_executable(test_forward_gpu tests/test_forward_gpu.cpp)
+  target_link_libraries(test_forward_gpu PRIVATE engine_gpu)
+  target_compile_definitions(test_forward_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+  add_test(NAME forward_gpu COMMAND test_forward_gpu)
+
+  # main_generate grows the gpu device in CUDA builds only.
+  target_compile_definitions(main_generate PRIVATE HAVE_GPU)
+  target_link_libraries(main_generate PRIVATE engine_gpu)
 else()
   message(STATUS "No CUDA compiler — building CPU-only targets (expected on the Mac)")
 endif()
