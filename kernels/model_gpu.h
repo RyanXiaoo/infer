@@ -1,0 +1,54 @@
+// model_gpu.h — public interface to the GPU forward pass (Stage 3).
+//
+// Plain C++ header (boundary rule: no CUDA types — safe to include from host
+// code; the Mac build never compiles the implementation behind it).
+//
+// Mirrors src/forward.h: same TapFn, same tap names and shapes, same
+// last_only semantics — so the same validation ladder drives both paths.
+
+#pragma once
+
+#include "../src/forward.h"   // Model, TapFn
+#include "../src/model.h"
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+namespace llm {
+
+// Which implementation serves the linear/GEMV ops. kMine is the deliverable;
+// kCublas is the bisection tool (ladder fails on mine but passes on cublas ->
+// the bug is in my GEMV; fails on both -> it's in RoPE/attention/norm/glue)
+// and the honesty yardstick for Stage 5.
+enum class GemmPath { kMine, kCublas };
+
+class GpuModel {
+public:
+    // Uploads every weight tensor (bf16, byte-identical to the file) to the
+    // device once. `m` must outlive nothing — weights are copied, not viewed.
+    explicit GpuModel(const Model& m);
+    ~GpuModel();
+    GpuModel(const GpuModel&) = delete;
+    GpuModel& operator=(const GpuModel&) = delete;
+
+    const ModelConfig& cfg() const;
+
+    struct Impl;
+
+private:
+    std::unique_ptr<Impl> impl_;
+    friend std::vector<float> forward_gpu(GpuModel&, const std::vector<int64_t>&,
+                                          const TapFn*, bool, GemmPath);
+};
+
+// Same contract as llm::forward (src/forward.h), executed on the GPU.
+std::vector<float> forward_gpu(GpuModel& m, const std::vector<int64_t>& token_ids,
+                               const TapFn* taps = nullptr, bool last_only = false,
+                               GemmPath gemm = GemmPath::kMine);
+
+// Same contract as llm::greedy_decode: full recompute per token (no cache).
+std::vector<int64_t> greedy_decode_gpu(GpuModel& m, std::vector<int64_t> token_ids,
+                                       int n_new, GemmPath gemm = GemmPath::kMine);
+
+} // namespace llm
