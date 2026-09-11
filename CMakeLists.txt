@@ -16,6 +16,22 @@ add_executable(test_f16 tests/test_f16.cpp)
 enable_testing()
 add_test(NAME f16 COMMAND test_f16)
 
+add_library(engine_core STATIC
+  src/loader.cpp
+  src/model_config.cpp
+  src/npy.cpp)
+target_include_directories(engine_core PUBLIC third_party)
+
+add_executable(test_loader tests/test_loader.cpp)
+target_link_libraries(test_loader PRIVATE engine_core)
+target_compile_definitions(test_loader PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME loader COMMAND test_loader)
+
+add_executable(test_npy tests/test_npy.cpp)
+target_link_libraries(test_npy PRIVATE engine_core)
+target_compile_definitions(test_npy PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME npy COMMAND test_npy)
+
 # ---------------------------------------------------------------- CUDA targets
 # Only configured where a CUDA compiler exists (the WSL2 box). sm_120 SASS for
 # the 5070 Ti plus PTX fallback ("120-real;120-virtual") so the binary can JIT

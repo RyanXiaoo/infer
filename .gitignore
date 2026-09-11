@@ -17,3 +17,5 @@ models/
 compile_commands.json
 
 plans/
+.venv/
+tests/golden/
