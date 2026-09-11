@@ -19,7 +19,9 @@ add_test(NAME f16 COMMAND test_f16)
 add_library(engine_core STATIC
   src/loader.cpp
   src/model_config.cpp
-  src/npy.cpp)
+  src/npy.cpp
+  src/model.cpp
+  src/forward.cpp)
 target_include_directories(engine_core PUBLIC third_party)
 
 add_executable(test_loader tests/test_loader.cpp)
@@ -31,6 +33,15 @@ add_executable(test_npy tests/test_npy.cpp)
 target_link_libraries(test_npy PRIVATE engine_core)
 target_compile_definitions(test_npy PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME npy COMMAND test_npy)
+
+add_executable(test_forward tests/test_forward.cpp)
+target_link_libraries(test_forward PRIVATE engine_core)
+target_compile_definitions(test_forward PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME forward COMMAND test_forward)
+
+add_executable(main_generate src/main_generate.cpp)
+target_link_libraries(main_generate PRIVATE engine_core)
+target_compile_definitions(main_generate PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 
 # ---------------------------------------------------------------- CUDA targets
 # Only configured where a CUDA compiler exists (the WSL2 box). sm_120 SASS for
