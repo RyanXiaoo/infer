@@ -1,0 +1,29 @@
+{
+  "what": "Stage 4 KV cache: cached decode vs Stage 3 full-recompute decode",
+  "model": "Qwen2.5-0.5B-Instruct (bf16 weights, fp32 activations + fp32 KV cache)",
+  "prompt": "prompt3 (12 tokens), greedy; decode tok/s at two lengths to show that the cache win GROWS with length (recompute is O(T) per token, cached is ~O(1) model work)",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "sm_clock_mhz_locked": 2535,
+  "mem_clock_mhz_locked": 14001,
+  "temp_c": 41,
+  "driver": "591.86",
+  "cuda_toolkit": "13.3",
+  "cache_dtype": "fp32",
+  "max_seq": "n_new + prompt + 8 (per run)",
+  "equivalence": "cached == recompute token streams on all 5 prompts, CPU + GPU (mine and cublas); CPU per-step logits bit-identical (diff 0)",
+  "sanitizer": "4/4 clean on the GPU cache path (memcheck/initcheck/synccheck/racecheck)",
+
+  "decode_tok_s": {
+    "cpu_mine":    { "recompute_n32": 0.181, "cached_n32": 3.660, "note": "20x at n=32" },
+    "gpu_mine":    { "recompute_n32": 12.364, "cached_n32": 29.108,
+                     "recompute_n256": 2.860, "cached_n256": 15.699 },
+    "gpu_cublas":  { "recompute_n32": 77.716, "cached_n32": 80.148,
+                     "recompute_n256": 23.440, "cached_n256": 24.008 }
+  },
+
+  "findings": {
+    "naive_kernels": "cache wins 2.4x at n=32 and 5.5x at n=256 (15.7 vs 2.86); recompute decode slows badly with length (12.4 -> 2.9), cached stays far more stable (29 -> 15.7). The KV cache is the biggest algorithmic win when the matmuls dominate.",
+    "cublas": "cache barely moves it (80 vs 78 at n=32, 24 vs 23 at n=256). With cuBLAS the GEMMs are already fast enough that decode is dominated by per-step OVERHEAD (600KB logits copy + implicit sync every step, ~220 serialized kernel launches per token, host-side rope + CPU argmax over 151936). Removing redundant GEMM work doesn't help when GEMM wasn't the bottleneck. That overhead, not the cache, is the next thing to attack.",
+    "length_dependence": "even cached decode is not perfectly flat (attention_cached is O(cache_len) and runs badly-occupied on ~14 threads), but the per-token MODEL work is now constant vs recompute's linear growth, which is the whole point."
+  }
+}
