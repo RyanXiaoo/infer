@@ -40,6 +40,7 @@ private:
     std::unique_ptr<Impl> impl_;
     friend std::vector<float> forward_gpu(GpuModel&, const std::vector<int64_t>&,
                                           const TapFn*, bool, GemmPath);
+    friend class GpuSession;   // shares the device weights + linear dispatch
 };
 
 // Same contract as llm::forward (src/forward.h), executed on the GPU.
