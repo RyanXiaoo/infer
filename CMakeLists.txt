@@ -91,7 +91,7 @@ if(CMAKE_CUDA_COMPILER)
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)
 
-  # main_generate grows the gpu device in CUDA builds only.
+  # main_generate grows the gpu device + KV-cache session in CUDA builds only.
   target_compile_definitions(main_generate PRIVATE HAVE_GPU)
   target_link_libraries(main_generate PRIVATE engine_gpu)
 else()
