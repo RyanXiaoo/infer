@@ -1,6 +1,7 @@
 // forward.cpp — see forward.h. Plain scalar C++; correctness only.
 
 #include "forward.h"
+#include "forward_internal.h"
 #include "f16.h"
 
 #include <cassert>
@@ -9,11 +10,10 @@
 #include <limits>
 #include <stdexcept>
 
-namespace llm {
-
-namespace {
+namespace llm::detail {
 
 // ---------------------------------------------------------------- primitives
+// Shared with the KV-cache session (see forward_internal.h for contracts).
 
 // y = x / sqrt(mean(x^2) + eps) * w, per row. Mean over the hidden dim — no
 // mean-subtraction, no bias (that would be LayerNorm, the wrong norm here).
@@ -49,7 +49,7 @@ void linear(const float* x, const Tensor* W, const Tensor* b, int64_t T,
 // RoPE tables, HF layout: inv_freq in fp32 (HF computes it fp32 regardless of
 // model dtype), row [pos] = [cos(pos*f_0)..cos(pos*f_{h/2-1}) | same again] —
 // the table is duplicated halves, NOT interleaved.
-void rope_tables(double theta, int64_t head_dim, int64_t T,
+void rope_tables(double theta, int64_t head_dim, int64_t pos0, int64_t T,
                  std::vector<float>& cos_t, std::vector<float>& sin_t) {
     const int64_t half = head_dim / 2;
     std::vector<float> inv_freq(half);
@@ -59,7 +59,9 @@ void rope_tables(double theta, int64_t head_dim, int64_t T,
     sin_t.resize(T * head_dim);
     for (int64_t t = 0; t < T; t++) {
         for (int64_t j = 0; j < half; j++) {
-            float a = float(t) * inv_freq[j];
+            // Absolute position pos0+t: a decoded token is rotated at its true
+            // place in the sequence, not at 0 (the KV-cache correctness trap).
+            float a = float(pos0 + t) * inv_freq[j];
             float c = std::cos(a), s = std::sin(a);
             cos_t[t * head_dim + j] = c;
             cos_t[t * head_dim + half + j] = c;
@@ -92,10 +94,7 @@ void apply_rope(float* x, int64_t T, int64_t n_heads, int64_t head_dim,
     }
 }
 
-// silu(z) = z * sigmoid(z) = z / (1 + e^-z)
-inline float silu(float z) { return z / (1.0f + std::exp(-z)); }
-
-// GQA causal attention over the full sequence (prefill; no cache this stage).
+// GQA causal attention over the full sequence (prefill / recompute path).
 // q: [T, n_heads*hd], k/v: [T, n_kv*hd] (all post-RoPE where applicable).
 // Q head h reads KV head h/group (group = n_heads/n_kv: 14/2 -> 7 for Qwen-0.5B).
 // Output ctx: [T, n_heads*hd] — the concat-of-heads o_proj input.
@@ -135,6 +134,14 @@ void attention(const float* q, const float* k, const float* v, int64_t T,
         }
     }
 }
+
+} // namespace llm::detail
+
+namespace llm {
+
+using namespace llm::detail;
+
+namespace {
 
 // --------------------------------------------------------------- tap helpers
 
@@ -181,7 +188,7 @@ std::vector<float> forward(const Model& m, const std::vector<int64_t>& ids,
     tap(taps, "hidden_state_0", h, {1, T, H});
 
     std::vector<float> cos_t, sin_t;
-    rope_tables(cfg.rope_theta, hd, T, cos_t, sin_t);
+    rope_tables(cfg.rope_theta, hd, /*pos0=*/0, T, cos_t, sin_t);
     tap(taps, "rope_cos", cos_t, {1, T, hd});
     tap(taps, "rope_sin", sin_t, {1, T, hd});
 
