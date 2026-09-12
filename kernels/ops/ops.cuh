@@ -54,4 +54,16 @@ void launch_swiglu(float* gate, const float* up, int64_t n);
 // h[i] += delta[i]
 void launch_residual_add(float* h, const float* delta, int64_t n);
 
+// Copy T rows of freshly-computed post-RoPE K and V into the caches at row
+// `pos` (prefill: T rows from 0; decode: 1 row at the current length).
+void launch_cache_append(const float* k_src, const float* v_src, float* k_cache,
+                         float* v_cache, int64_t T, int64_t kv_dim, int64_t pos);
+
+// Single-query GQA attention over the cache: q is [n_heads*hd] (one token),
+// k_cache/v_cache hold `cache_len` rows of [n_kv*hd]. One thread per head.
+// Naive on purpose (Stage 8 fuses it); mirror of the CPU decode loop.
+void launch_attention_cached(const float* q, const float* k_cache,
+                             const float* v_cache, int64_t cache_len,
+                             int64_t n_heads, int64_t n_kv, int64_t hd, float* ctx);
+
 } // namespace llm::gpu
