@@ -21,7 +21,8 @@ add_library(engine_core STATIC
   src/model_config.cpp
   src/npy.cpp
   src/model.cpp
-  src/forward.cpp)
+  src/forward.cpp
+  src/session.cpp)
 target_include_directories(engine_core PUBLIC third_party)
 
 add_executable(test_loader tests/test_loader.cpp)
@@ -38,6 +39,11 @@ add_executable(test_forward tests/test_forward.cpp)
 target_link_libraries(test_forward PRIVATE engine_core)
 target_compile_definitions(test_forward PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME forward COMMAND test_forward)
+
+add_executable(test_kv_cache tests/test_kv_cache.cpp)
+target_link_libraries(test_kv_cache PRIVATE engine_core)
+target_compile_definitions(test_kv_cache PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME kv_cache COMMAND test_kv_cache)
 
 add_executable(main_generate src/main_generate.cpp)
 target_link_libraries(main_generate PRIVATE engine_core)
