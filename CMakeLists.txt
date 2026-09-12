@@ -72,18 +72,24 @@ if(CMAKE_CUDA_COMPILER)
   # Stage 3: the GPU forward pass (naive kernels + cuBLAS bisection path).
   add_library(engine_gpu STATIC
     kernels/model_gpu.cu
+    kernels/session_gpu.cu
     kernels/ops/embedding.cu
     kernels/ops/rmsnorm.cu
     kernels/ops/linear.cu
     kernels/ops/rope.cu
     kernels/ops/attention.cu
-    kernels/ops/elementwise.cu)
+    kernels/ops/elementwise.cu
+    kernels/ops/cache.cu)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 
   add_executable(test_forward_gpu tests/test_forward_gpu.cpp)
   target_link_libraries(test_forward_gpu PRIVATE engine_gpu)
   target_compile_definitions(test_forward_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
   add_test(NAME forward_gpu COMMAND test_forward_gpu)
+
+  # KV cache test gains its GPU half in CUDA builds.
+  target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
+  target_link_libraries(test_kv_cache PRIVATE engine_gpu)
 
   # main_generate grows the gpu device in CUDA builds only.
   target_compile_definitions(main_generate PRIVATE HAVE_GPU)

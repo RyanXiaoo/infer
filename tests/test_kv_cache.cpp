@@ -16,6 +16,11 @@
 #include "../src/model.h"
 #include "../src/npy.h"
 
+#ifdef HAVE_GPU
+#include "../kernels/model_gpu.h"
+#include "../kernels/session_gpu.h"
+#endif
+
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -78,6 +83,27 @@ int main() {
         std::printf("%s: streams identical (%d tokens); worst per-step logit diff %.4g\n",
                     tag.c_str(), N, worst);
     }
+
+#ifdef HAVE_GPU
+    // GPU: cached vs recompute must produce identical streams on both GEMM paths.
+    llm::GpuModel gpu(model);
+    for (llm::GemmPath gemm : {llm::GemmPath::kMine, llm::GemmPath::kCublas}) {
+        const char* gname = gemm == llm::GemmPath::kMine ? "mine" : "cublas";
+        for (int pi = 0; pi < n_prompts; pi++) {
+            auto g = llm::npy::load_npz(golden + "/prompt" + std::to_string(pi) + "_bf16.npz");
+            const auto& ia = g.at("token_ids");
+            std::vector<int64_t> ids(ia.i64(), ia.i64() + ia.numel());
+            std::vector<int64_t> rec = llm::greedy_decode_gpu(gpu, ids, N, gemm);
+            std::vector<int64_t> cac = llm::greedy_decode_cached_gpu(gpu, ids, N, 512, gemm);
+            if (rec != cac) {
+                std::printf("FAIL gpu/%s prompt%d: token streams differ\n", gname, pi);
+                failures++;
+            } else {
+                std::printf("gpu/%s prompt%d: streams identical (%d tokens)\n", gname, pi, N);
+            }
+        }
+    }
+#endif
 
     if (failures == 0) {
         std::printf("test_kv_cache: cached == recompute on all prompts\n");
