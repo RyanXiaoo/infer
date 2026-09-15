@@ -60,6 +60,10 @@ add_executable(main_generate src/main_generate.cpp)
 target_link_libraries(main_generate PRIVATE engine_core)
 target_compile_definitions(main_generate PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 
+add_executable(main_chat src/main_chat.cpp)
+target_link_libraries(main_chat PRIVATE engine_core)
+target_compile_definitions(main_chat PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+
 # ---------------------------------------------------------------- CUDA targets
 # Only configured where a CUDA compiler exists (the WSL2 box). sm_120 SASS for
 # the 5070 Ti plus PTX fallback ("120-real;120-virtual") so the binary can JIT
@@ -102,9 +106,11 @@ if(CMAKE_CUDA_COMPILER)
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)
 
-  # main_generate grows the gpu device + KV-cache session in CUDA builds only.
+  # main_generate + main_chat grow the gpu device in CUDA builds only.
   target_compile_definitions(main_generate PRIVATE HAVE_GPU)
   target_link_libraries(main_generate PRIVATE engine_gpu)
+  target_compile_definitions(main_chat PRIVATE HAVE_GPU)
+  target_link_libraries(main_chat PRIVATE engine_gpu)
 else()
   message(STATUS "No CUDA compiler — building CPU-only targets (expected on the Mac)")
 endif()
