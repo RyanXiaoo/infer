@@ -22,7 +22,9 @@ add_library(engine_core STATIC
   src/npy.cpp
   src/model.cpp
   src/forward.cpp
-  src/session.cpp)
+  src/session.cpp
+  src/tokenizer.cpp
+  src/sampler.cpp)
 target_include_directories(engine_core PUBLIC third_party)
 
 add_executable(test_loader tests/test_loader.cpp)
@@ -44,6 +46,15 @@ add_executable(test_kv_cache tests/test_kv_cache.cpp)
 target_link_libraries(test_kv_cache PRIVATE engine_core)
 target_compile_definitions(test_kv_cache PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME kv_cache COMMAND test_kv_cache)
+
+add_executable(test_tokenizer tests/test_tokenizer.cpp)
+target_link_libraries(test_tokenizer PRIVATE engine_core)
+target_compile_definitions(test_tokenizer PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+add_test(NAME tokenizer COMMAND test_tokenizer)
+
+add_executable(test_sampler tests/test_sampler.cpp)
+target_link_libraries(test_sampler PRIVATE engine_core)
+add_test(NAME sampler COMMAND test_sampler)
 
 add_executable(main_generate src/main_generate.cpp)
 target_link_libraries(main_generate PRIVATE engine_core)
