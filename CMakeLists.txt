@@ -102,6 +102,12 @@ if(CMAKE_CUDA_COMPILER)
   target_compile_definitions(test_forward_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
   add_test(NAME forward_gpu COMMAND test_forward_gpu)
 
+  # Stage 5: per-kernel edge-size sweep vs a host double-precision reference.
+  add_executable(test_ops_gpu tests/test_ops_gpu.cu)
+  target_link_libraries(test_ops_gpu PRIVATE engine_gpu)
+  add_test(NAME ops_gpu COMMAND test_ops_gpu)
+  add_test(NAME ops_gpu_selftest COMMAND test_ops_gpu --selftest)
+
   # KV cache test gains its GPU half in CUDA builds.
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)
