@@ -66,4 +66,19 @@ void launch_attention_cached(const float* q, const float* k_cache,
                              const float* v_cache, int64_t cache_len,
                              int64_t n_heads, int64_t n_kv, int64_t hd, float* ctx);
 
+// Stage 5 variants of launch_attention_cached. Both keep each head's scores in
+// `scores` (device scratch, at least n_heads * cache_len floats) instead of
+// recomputing them per pass.
+//   stored: still one thread per head (isolates the cost of the recomputation).
+//   par:    one block per head, `threads` threads splitting the cache positions
+//           (power of two, <= 1024; 0 = choose from hd and cache_len).
+void launch_attention_cached_stored(const float* q, const float* k_cache,
+                                    const float* v_cache, float* scores,
+                                    int64_t cache_len, int64_t n_heads, int64_t n_kv,
+                                    int64_t hd, float* ctx);
+void launch_attention_cached_par(const float* q, const float* k_cache,
+                                 const float* v_cache, float* scores, int64_t cache_len,
+                                 int64_t n_heads, int64_t n_kv, int64_t hd, float* ctx,
+                                 int threads = 0);
+
 } // namespace llm::gpu

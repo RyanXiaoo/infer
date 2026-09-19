@@ -53,11 +53,43 @@ using AttnFn = void (*)(const float* q, const float* k_cache, const float* v_cac
 struct GemvImpl { const char* name; GemvFn fn; };
 struct AttnImpl { const char* name; AttnFn fn; };
 
+// The Stage 5 attention kernels take a scores scratch buffer; the test's common
+// signature does not, so these wrappers own one (NaN-filled before every call:
+// a kernel that reads a score it never wrote poisons its output).
+template <typename Launch>
+void with_scores_scratch(int64_t n_heads, int64_t cache_len, Launch launch) {
+    const size_t n = size_t(n_heads) * cache_len;
+    float* scores = nullptr;
+    CUDA_CHECK(cudaMalloc(&scores, n * 4));
+    CUDA_CHECK(cudaMemset(scores, 0xFF, n * 4));   // all-ones bit pattern = NaN
+    launch(scores);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    cudaFree(scores);
+}
+void attn_stored(const float* q, const float* k, const float* v, int64_t len, int64_t nh,
+                 int64_t nkv, int64_t hd, float* ctx) {
+    with_scores_scratch(nh, len, [&](float* sc) {
+        llm::gpu::launch_attention_cached_stored(q, k, v, sc, len, nh, nkv, hd, ctx);
+    });
+}
+template <int Threads>
+void attn_par(const float* q, const float* k, const float* v, int64_t len, int64_t nh,
+              int64_t nkv, int64_t hd, float* ctx) {
+    with_scores_scratch(nh, len, [&](float* sc) {
+        llm::gpu::launch_attention_cached_par(q, k, v, sc, len, nh, nkv, hd, ctx, Threads);
+    });
+}
+
 std::vector<GemvImpl> gemv_impls = {
     {"naive", llm::gpu::launch_linear_mine},
 };
 std::vector<AttnImpl> attn_impls = {
     {"naive", llm::gpu::launch_attention_cached},
+    {"stored", attn_stored},
+    {"par/auto", attn_par<0>},
+    {"par/32", attn_par<32>},       // fewer threads than hd: the hd > B path
+    {"par/64", attn_par<64>},       // threads == hd (hd 64): one class
+    {"par/1024", attn_par<1024>},   // the largest block
 };
 
 // --selftest stand-ins. Each behaves like a kernel with one classic reduction
