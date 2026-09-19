@@ -97,6 +97,10 @@ if(CMAKE_CUDA_COMPILER)
     kernels/ops/cache.cu)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 
+  # Stage 5: per-shape decode GEMV microbench (mine vs cuBLAS, GB/s vs achievable).
+  add_executable(gemv_bench kernels/bench/gemv_bench.cu)
+  target_link_libraries(gemv_bench PRIVATE bench_harness engine_gpu)
+
   add_executable(test_forward_gpu tests/test_forward_gpu.cpp)
   target_link_libraries(test_forward_gpu PRIVATE engine_gpu)
   target_compile_definitions(test_forward_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
