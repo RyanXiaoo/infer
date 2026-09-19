@@ -138,19 +138,35 @@ int main() {
               name.c_str(), (long long)idx, got, want);
     }
 
-    // --- ModelConfig against the known Qwen2.5-0.5B facts ---
+    // --- ModelConfig against facts known independently of our parser (the model
+    // cards), per checkpoint. A model without an entry still gets every check
+    // above; only this cross-check is skipped.
+    struct Facts { const char* model; int64_t hidden, layers, heads, kv_heads, head_dim,
+                   intermediate, vocab; double rope_theta; bool tied, attn_bias; };
+    static const Facts kFacts[] = {
+        {"Qwen2.5-0.5B-Instruct", 896, 24, 14, 2, 64, 4864, 151936, 1000000.0, true, true},
+        {"Qwen2.5-1.5B-Instruct", 1536, 28, 12, 2, 128, 8960, 151936, 1000000.0, true, true},
+    };
     auto cfg = llm::ModelConfig::from_file(model_dir + "/config.json");
-    CHECK(cfg.architecture == "Qwen2ForCausalLM", "architecture: %s", cfg.architecture.c_str());
-    CHECK(cfg.hidden_size == 896, "hidden_size %lld", (long long)cfg.hidden_size);
-    CHECK(cfg.num_hidden_layers == 24, "layers %lld", (long long)cfg.num_hidden_layers);
-    CHECK(cfg.num_attention_heads == 14, "heads %lld", (long long)cfg.num_attention_heads);
-    CHECK(cfg.num_key_value_heads == 2, "kv heads %lld", (long long)cfg.num_key_value_heads);
-    CHECK(cfg.head_dim == 64, "head_dim %lld", (long long)cfg.head_dim);
-    CHECK(cfg.intermediate_size == 4864, "intermediate %lld", (long long)cfg.intermediate_size);
-    CHECK(cfg.vocab_size == 151936, "vocab %lld", (long long)cfg.vocab_size);
-    CHECK(cfg.rope_theta == 1000000.0, "rope_theta %f", cfg.rope_theta);
-    CHECK(cfg.tie_word_embeddings, "tie_word_embeddings should be true");
-    CHECK(cfg.attention_bias, "attention_bias should default true for Qwen2");
+    const Facts* f = nullptr;
+    for (const Facts& k : kFacts)
+        if (llm::model_name() == k.model) f = &k;
+    if (!f) {
+        std::printf("note: no config facts recorded for %s, cross-check skipped\n",
+                    llm::model_name().c_str());
+    } else {
+        CHECK(cfg.architecture == "Qwen2ForCausalLM", "architecture: %s", cfg.architecture.c_str());
+        CHECK(cfg.hidden_size == f->hidden, "hidden_size %lld", (long long)cfg.hidden_size);
+        CHECK(cfg.num_hidden_layers == f->layers, "layers %lld", (long long)cfg.num_hidden_layers);
+        CHECK(cfg.num_attention_heads == f->heads, "heads %lld", (long long)cfg.num_attention_heads);
+        CHECK(cfg.num_key_value_heads == f->kv_heads, "kv heads %lld", (long long)cfg.num_key_value_heads);
+        CHECK(cfg.head_dim == f->head_dim, "head_dim %lld", (long long)cfg.head_dim);
+        CHECK(cfg.intermediate_size == f->intermediate, "intermediate %lld", (long long)cfg.intermediate_size);
+        CHECK(cfg.vocab_size == f->vocab, "vocab %lld", (long long)cfg.vocab_size);
+        CHECK(cfg.rope_theta == f->rope_theta, "rope_theta %f", cfg.rope_theta);
+        CHECK(cfg.tie_word_embeddings == f->tied, "tie_word_embeddings");
+        CHECK(cfg.attention_bias == f->attn_bias, "attention_bias");
+    }
 
     if (failures == 0) {
         std::printf("test_loader: all checks passed (%zu tensors, set-equal, "
