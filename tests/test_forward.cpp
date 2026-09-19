@@ -16,6 +16,7 @@
 
 #include "../src/forward.h"
 #include "../src/model.h"
+#include "../src/model_select.h"
 #include "../src/npy.h"
 
 #include <cmath>
@@ -89,7 +90,7 @@ static bool check_tap(const std::string& prompt_tag, const std::string& name,
 
 int main() {
     const std::string root = MODEL_ROOT;
-    const std::string golden = root + "/tests/golden";
+    const std::string golden = llm::golden_dir(root);
 
     std::ifstream mf(golden + "/manifest.json");
     if (!mf) {
@@ -106,7 +107,7 @@ int main() {
     if (smoke) n_prompts = 1;
 
     llm::Model model;
-    model.load(root + "/models/Qwen2.5-0.5B-Instruct");
+    model.load(llm::model_dir(root));
 
     // Optional milestone E golden (tools/dump_logits.py --greedy).
     nlohmann::json greedy;

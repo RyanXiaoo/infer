@@ -15,6 +15,7 @@
 //   and it GROWS with n_new (recompute is O(T) per token, cache is O(1) model work).
 
 #include "forward.h"
+#include "model_select.h"
 #include "session.h"
 #include "model.h"
 #include "npy.h"
@@ -46,13 +47,14 @@ int main(int argc, char** argv) {
     const std::string step = argc > 7 ? argv[7] : "fused";
 
     llm::Model model;
-    model.load(root + "/models/Qwen2.5-0.5B-Instruct");
+    model.load(llm::model_dir(root));
 
-    auto g = llm::npy::load_npz(root + "/tests/golden/prompt" +
+    auto g = llm::npy::load_npz(llm::golden_dir(root) + "/prompt" +
                                 std::to_string(prompt_idx) + "_bf16.npz");
     const auto& ids_arr = g.at("token_ids");
     std::vector<int64_t> ids(ids_arr.i64(), ids_arr.i64() + ids_arr.numel());
 
+    std::printf("model %s\n", llm::model_name().c_str());
     std::printf("prompt %d (%zu tokens), device=%s gemm=%s cache=%s attn=%s step=%s:\n",
                 prompt_idx, ids.size(), device.c_str(), gemm.c_str(), cache ? "on" : "off",
                 attn.c_str(), step.c_str());

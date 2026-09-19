@@ -10,6 +10,7 @@
 //                  [--temp T] [--top-k K] [--top-p P] [--seed S] [--max N]
 
 #include "forward.h"
+#include "model_select.h"
 #include "model.h"
 #include "session.h"
 #include "sampler.h"
@@ -74,9 +75,9 @@ int main(int argc, char** argv) {
 #endif
 
     llm::Model model;
-    model.load(root + "/models/Qwen2.5-0.5B-Instruct");
+    model.load(llm::model_dir(root));
     llm::Tokenizer tok;
-    tok.load(root + "/models/Qwen2.5-0.5B-Instruct/tokenizer.json");
+    tok.load(llm::model_dir(root) + "/tokenizer.json");
 
 #ifdef HAVE_GPU
     std::unique_ptr<llm::GpuModel> gpu;

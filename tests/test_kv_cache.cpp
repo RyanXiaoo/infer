@@ -14,6 +14,7 @@
 #include "../src/forward.h"
 #include "../src/session.h"
 #include "../src/model.h"
+#include "../src/model_select.h"
 #include "../src/npy.h"
 
 #ifdef HAVE_GPU
@@ -37,7 +38,7 @@ static constexpr int N = 32;
 int main(int argc, char** argv) {
     const bool gpu_only = argc > 1 && std::string(argv[1]) == "--gpu-only";
     const std::string root = MODEL_ROOT;
-    const std::string golden = root + "/tests/golden";
+    const std::string golden = llm::golden_dir(root);
 
     std::ifstream mf(golden + "/manifest.json");
     if (!mf) { std::printf("SKIP: goldens not found\n"); return 0; }
@@ -45,7 +46,7 @@ int main(int argc, char** argv) {
     int n_prompts = int(manifest["prompts"].size());
 
     llm::Model model;
-    model.load(root + "/models/Qwen2.5-0.5B-Instruct");
+    model.load(llm::model_dir(root));
 
     for (int pi = 0; pi < n_prompts && !gpu_only; pi++) {
         const std::string tag = "prompt" + std::to_string(pi);

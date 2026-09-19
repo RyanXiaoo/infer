@@ -10,6 +10,7 @@
 // transposed-layout bugs element (0,0) can't.
 
 #include "../src/loader.h"
+#include "../src/model_select.h"
 #include "../src/model_config.h"
 
 #include <cstdio>
@@ -54,9 +55,9 @@ static std::string sha256_file(const std::string& path) {
 
 int main() {
     const std::string root = MODEL_ROOT;   // injected by CMake: repo root
-    const std::string model_dir = root + "/models/Qwen2.5-0.5B-Instruct";
+    const std::string model_dir = llm::model_dir(root);
     const std::string st_path = model_dir + "/model.safetensors";
-    const std::string manifest_path = root + "/tests/golden/manifest.json";
+    const std::string manifest_path = llm::golden_dir(root) + "/manifest.json";
 
     std::ifstream mf(manifest_path);
     if (!mf) {

@@ -14,6 +14,8 @@ residual-stream boundary (NOTE: hf index 0 = embedding output, i = after layer i
 has the final norm already applied), intra-layer taps for layers 0 and 12, RoPE pins
 (position_ids, cos, sin), and the attention mask actually used.
 
+Usage: dump_logits.py [--model Qwen2.5-1.5B-Instruct] [--greedy]
+
 Conventions the C++ side relies on:
   * np.savez (uncompressed) — the C++ npz reader doesn't do deflate
   * all float arrays saved as float32; raw-bits arrays as uint16; ids as int64
@@ -33,8 +35,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL_DIR = ROOT / "models" / "Qwen2.5-0.5B-Instruct"
-OUT = ROOT / "tests" / "golden"
+DEFAULT_MODEL = "Qwen2.5-0.5B-Instruct"
+
+
+def _model_arg() -> str:
+    """--model <dir name under models/>; default is the 0.5B dev model."""
+    if "--model" in sys.argv:
+        return sys.argv[sys.argv.index("--model") + 1]
+    return DEFAULT_MODEL
+
+
+# The dev model's goldens live directly in tests/golden/ (what every test reads
+# by default); any other model's go to tests/golden/<name>/, matching
+# src/model_select.h (LLM_MODEL=<name>).
+MODEL_NAME = _model_arg()
+MODEL_DIR = ROOT / "models" / MODEL_NAME
+OUT = ROOT / "tests" / "golden" if MODEL_NAME == DEFAULT_MODEL else ROOT / "tests" / "golden" / MODEL_NAME
 
 PROMPTS = [
     "The capital of France is",
@@ -227,7 +243,7 @@ def dump_greedy(n_new: int = 8) -> None:
         print(f"{prompt!r} -> {cont} {tokenizer.decode(cont)!r}")
 
     (OUT / "greedy.json").write_text(json.dumps(
-        {"model": "Qwen/Qwen2.5-0.5B-Instruct", "dtype": "float32",
+        {"model": f"Qwen/{MODEL_NAME}", "dtype": "float32",
          "n_new_tokens": n_new, "prompts": entries}, indent=1))
     print(f"greedy.json: {len(entries)} prompts x {n_new} tokens")
 
@@ -273,7 +289,7 @@ def main() -> None:
             shapes[name] = {"shape": list(t.get_shape()), "dtype": t.get_dtype()}
 
     manifest = {
-        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "model": f"Qwen/{MODEL_NAME}",
         "sha256_model_safetensors": sha256_of(st_path),
         "versions": {"transformers": transformers.__version__,
                      "torch": torch.__version__,
