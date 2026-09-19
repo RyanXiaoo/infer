@@ -36,6 +36,13 @@ inline const char* gemm_path_name(GemmPath p) {
     return p == GemmPath::kCublas ? "cublas" : p == GemmPath::kMineNaive ? "naive" : "mine";
 }
 
+// How GpuSession::decode_one issues a layer's kernels. kFused (Stage 5 Phase 3)
+// cuts launches per layer from 16 to 9 with bit-identical results: residual-add
+// folded into the following RMSNorm, rope(q)+rope(k)+cache-append in one kernel,
+// and, on GemmPath::kMine only, q|k|v and gate|up each as one GEMV over
+// concatenated weights. kUnfused is the Stage 4 sequence (reference, "before").
+enum class StepPath { kUnfused, kFused };
+
 // Which kernel serves single-query (decode) attention over the KV cache.
 // kNaive is the Stage 4 one-thread-per-head kernel, kept as the reference;
 // kParallel is the Stage 5 one-block-per-head kernel. Independent of GemmPath:

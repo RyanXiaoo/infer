@@ -5,7 +5,8 @@
 // prefill time, and decode tokens/sec.
 //
 // Usage: main_generate [prompt=0] [n_new=16] [device=cpu|gpu] [gemm=mine|cublas|naive]
-//                      [cache=on|off] [attn=par|naive]
+//                      [cache=on|off] [attn=par|naive] [step=fused|unfused]
+//   step: fused = Stage 5 decode step (9 launches per layer), unfused = Stage 4 sequence (16).
 //   gemm: mine = Stage 5 row-parallel decode GEMV, naive = Stage 3 kernel, cublas = yardstick.
 //   attn picks the GPU decode-attention kernel (cache=on only): par is the Stage 5
 //   one-block-per-head kernel, naive the Stage 4 one-thread-per-head reference.
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
     const std::string gemm = argc > 4 ? argv[4] : "mine";
     const bool cache = argc > 5 ? (std::string(argv[5]) != "off") : true;
     const std::string attn = argc > 6 ? argv[6] : "par";
+    const std::string step = argc > 7 ? argv[7] : "fused";
 
     llm::Model model;
     model.load(root + "/models/Qwen2.5-0.5B-Instruct");
@@ -51,8 +53,9 @@ int main(int argc, char** argv) {
     const auto& ids_arr = g.at("token_ids");
     std::vector<int64_t> ids(ids_arr.i64(), ids_arr.i64() + ids_arr.numel());
 
-    std::printf("prompt %d (%zu tokens), device=%s gemm=%s cache=%s attn=%s:\n", prompt_idx,
-                ids.size(), device.c_str(), gemm.c_str(), cache ? "on" : "off", attn.c_str());
+    std::printf("prompt %d (%zu tokens), device=%s gemm=%s cache=%s attn=%s step=%s:\n",
+                prompt_idx, ids.size(), device.c_str(), gemm.c_str(), cache ? "on" : "off",
+                attn.c_str(), step.c_str());
 
     double prefill_s = 0, decode_s = 0;
     std::vector<int64_t> out;
@@ -84,12 +87,13 @@ int main(int argc, char** argv) {
 #ifdef HAVE_GPU
         llm::GemmPath path = llm::gemm_path_from(gemm);
         llm::AttnPath apath = attn == "naive" ? llm::AttnPath::kNaive : llm::AttnPath::kParallel;
+        llm::StepPath spath = step == "unfused" ? llm::StepPath::kUnfused : llm::StepPath::kFused;
         llm::GpuModel gpu(model);
         if (cache) {
             const int64_t ms = n_new + int(ids.size()) + 8;
-            llm::GpuSession warm(gpu, ms, path, apath);
+            llm::GpuSession warm(gpu, ms, path, apath, spath);
             warm.prefill(ids);   // warm-up (context, cublas mirrors)
-            llm::GpuSession s(gpu, ms, path, apath);
+            llm::GpuSession s(gpu, ms, path, apath, spath);
             auto t0 = Clock::now();
             std::vector<float> logits = s.prefill(ids);
             prefill_s = since(t0);

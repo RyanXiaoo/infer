@@ -17,20 +17,31 @@ struct GpuSession::Impl {
     const int64_t max_seq;
     const GemmPath gemm;
     const AttnPath attn;
+    const StepPath step;
     int64_t pos = 0;
 
     // Per-layer device caches, [max_seq x kv_dim] fp32.
     std::vector<DevBuf> k_cache, v_cache;
     int64_t kv_dim;
 
-    // Reused decode scratch (T=1).
-    DevBuf d_id, h_, normed_, q_, k_, v_, ctx_, delta_, gate_, up_, d_cos, d_sin;
+    // Reused decode scratch (T=1). q|k|v share one buffer and gate|up another,
+    // so a fused GEMV can write all of them in one launch; q_/k_/v_/gate_/up_
+    // point into those buffers.
+    DevBuf d_id, h_, normed_, qkv_, ctx_, delta_, gate_up_;
+    float *q_ = nullptr, *k_ = nullptr, *v_ = nullptr, *gate_ = nullptr, *up_ = nullptr;
     // Decode attention scores, [n_heads x max_seq]. One buffer serves every
     // layer: a layer's scores are dead once its ctx is written.
     DevBuf attn_scores_;
+    // Per-step host work that used to sit between the GPU's kernels, hoisted to
+    // construction: the logits buffer (a cudaMalloc + synchronizing cudaFree per
+    // token measured 2 ms, as much as all GPU work), a pinned landing buffer for
+    // the logits copy, and RoPE cos/sin for every position up to max_seq (was a
+    // host table + two host-to-device copies per token).
+    DevBuf d_logits_, d_cos_tab_, d_sin_tab_;
+    float* h_logits_ = nullptr;   // pinned, vocab_size floats
 
-    Impl(GpuModel& g, int64_t ms, GemmPath gm_path, AttnPath attn_path)
-        : gm(g), M(*g.impl_), max_seq(ms), gemm(gm_path), attn(attn_path) {
+    Impl(GpuModel& g, int64_t ms, GemmPath gm_path, AttnPath attn_path, StepPath step_path)
+        : gm(g), M(*g.impl_), max_seq(ms), gemm(gm_path), attn(attn_path), step(step_path) {
         const auto& c = M.cfg;
         kv_dim = c.num_key_value_heads * c.head_dim;
         const int64_t H = c.hidden_size, hd = c.head_dim, I = c.intermediate_size;
@@ -44,16 +55,33 @@ struct GpuSession::Impl {
         d_id = DevBuf(8);
         h_ = DevBuf(H * 4);
         normed_ = DevBuf(H * 4);
-        q_ = DevBuf(q_out * 4);
-        k_ = DevBuf(kv_dim * 4);
-        v_ = DevBuf(kv_dim * 4);
+        qkv_ = DevBuf((q_out + 2 * kv_dim) * 4);
+        q_ = qkv_.f();
+        k_ = q_ + q_out;
+        v_ = k_ + kv_dim;
         ctx_ = DevBuf(q_out * 4);
         delta_ = DevBuf(H * 4);
-        gate_ = DevBuf(I * 4);
-        up_ = DevBuf(I * 4);
-        d_cos = DevBuf(hd * 4);
-        d_sin = DevBuf(hd * 4);
+        gate_up_ = DevBuf(2 * I * 4);
+        gate_ = gate_up_.f();
+        up_ = gate_ + I;
         attn_scores_ = DevBuf(size_t(c.num_attention_heads) * max_seq * 4);
+        d_logits_ = DevBuf(size_t(c.vocab_size) * 4);
+        CUDA_CHECK(cudaMallocHost(&h_logits_, size_t(c.vocab_size) * 4));
+        std::vector<float> cos_h, sin_h;
+        rope_tables_host(c.rope_theta, hd, /*pos0=*/0, max_seq, cos_h, sin_h);
+        d_cos_tab_ = DevBuf(cos_h.size() * 4);
+        d_sin_tab_ = DevBuf(sin_h.size() * 4);
+        CUDA_CHECK(cudaMemcpy(d_cos_tab_.p, cos_h.data(), cos_h.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_sin_tab_.p, sin_h.data(), sin_h.size() * 4, cudaMemcpyHostToDevice));
+    }
+    ~Impl() { if (h_logits_) cudaFreeHost(h_logits_); }
+
+    // Final-norm output (normed_) -> tied LM head -> logits on the host.
+    std::vector<float> lm_head_to_host() {
+        const int64_t V = M.cfg.vocab_size, H = M.cfg.hidden_size;
+        M.linear(gemm, normed_.f(), M.embed_tokens, nullptr, 1, H, V, d_logits_.f());
+        CUDA_CHECK(cudaMemcpy(h_logits_, d_logits_.p, size_t(V) * 4, cudaMemcpyDeviceToHost));
+        return std::vector<float>(h_logits_, h_logits_ + V);
     }
 
     std::vector<float> prefill(const std::vector<int64_t>& ids) {
@@ -108,11 +136,7 @@ struct GpuSession::Impl {
         // Final norm + tied LM head, last position only.
         gpu::launch_rmsnorm(h.f() + (T - 1) * H, M.final_norm.bf(),
                             float(cfg.rms_norm_eps), 1, H, normed_.f());
-        DevBuf d_logits(size_t(V) * 4);
-        M.linear(gemm, normed_.f(), M.embed_tokens, nullptr, 1, H, V, d_logits.f());
-        std::vector<float> logits(V);
-        CUDA_CHECK(cudaMemcpy(logits.data(), d_logits.p, size_t(V) * 4, cudaMemcpyDeviceToHost));
-        return logits;
+        return lm_head_to_host();
     }
 
     std::vector<float> decode_one(int64_t id) {
@@ -129,50 +153,87 @@ struct GpuSession::Impl {
         CUDA_CHECK(cudaMemcpy(d_id.p, &id64, 8, cudaMemcpyHostToDevice));
         gpu::launch_embedding(M.embed_tokens.bf(), d_id.i64(), 1, H, h_.f());
 
-        std::vector<float> cos_h, sin_h;
-        rope_tables_host(cfg.rope_theta, hd, /*pos0=*/pos, 1, cos_h, sin_h);
-        CUDA_CHECK(cudaMemcpy(d_cos.p, cos_h.data(), cos_h.size() * 4, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_sin.p, sin_h.data(), sin_h.size() * 4, cudaMemcpyHostToDevice));
+        const float* cos_row = d_cos_tab_.f() + pos * hd;   // this position's RoPE row
+        const float* sin_row = d_sin_tab_.f() + pos * hd;
 
-        for (int64_t li = 0; li < cfg.num_hidden_layers; li++) {
-            DevLayer& L = M.layers[li];
-            gpu::launch_rmsnorm(h_.f(), L.input_ln.bf(), float(cfg.rms_norm_eps), 1, H, normed_.f());
-            M.linear(gemm, normed_.f(), L.q_w, L.has_bias ? &L.q_b : nullptr, 1, H, q_out, q_.f());
-            M.linear(gemm, normed_.f(), L.k_w, L.has_bias ? &L.k_b : nullptr, 1, H, kv_out, k_.f());
-            M.linear(gemm, normed_.f(), L.v_w, L.has_bias ? &L.v_b : nullptr, 1, H, kv_out, v_.f());
-            gpu::launch_rope(q_.f(), d_cos.f(), d_sin.f(), 1, nh, hd);
-            gpu::launch_rope(k_.f(), d_cos.f(), d_sin.f(), 1, nkv, hd);
-            gpu::launch_cache_append(k_.f(), v_.f(), k_cache[li].f(), v_cache[li].f(), 1,
-                                     kv_dim, pos);
+        const float eps = float(cfg.rms_norm_eps);
+        const bool fused = step == StepPath::kFused;
+        // One GEMV over the concatenated rows needs my row-parallel kernel; the
+        // naive and cuBLAS paths stay call-per-matrix so they remain clean references.
+        const bool fused_gemv = fused && gemm == GemmPath::kMine;
+        const auto attention = [&](int64_t li) {
             if (attn == AttnPath::kParallel)
-                gpu::launch_attention_cached_par(q_.f(), k_cache[li].f(), v_cache[li].f(),
+                gpu::launch_attention_cached_par(q_, k_cache[li].f(), v_cache[li].f(),
                                                  attn_scores_.f(), cache_len, nh, nkv, hd,
                                                  ctx_.f());
             else
-                gpu::launch_attention_cached(q_.f(), k_cache[li].f(), v_cache[li].f(),
-                                             cache_len, nh, nkv, hd, ctx_.f());
+                gpu::launch_attention_cached(q_, k_cache[li].f(), v_cache[li].f(), cache_len,
+                                             nh, nkv, hd, ctx_.f());
+        };
+
+        for (int64_t li = 0; li < cfg.num_hidden_layers; li++) {
+            DevLayer& L = M.layers[li];
+            // Fused: layer li > 0 enters with normed_ already holding
+            // input_ln(h), produced by the add+norm that closed layer li-1.
+            if (!fused || li == 0)
+                gpu::launch_rmsnorm(h_.f(), L.input_ln.bf(), eps, 1, H, normed_.f());
+
+            if (fused_gemv) {
+                gpu::launch_gemv_rowpar(normed_.f(), L.q_w.bf(), L.has_bias ? L.q_b.bf() : nullptr,
+                                        1, H, q_out + 2 * kv_out, q_);
+            } else {
+                M.linear(gemm, normed_.f(), L.q_w, L.has_bias ? &L.q_b : nullptr, 1, H, q_out, q_);
+                M.linear(gemm, normed_.f(), L.k_w, L.has_bias ? &L.k_b : nullptr, 1, H, kv_out, k_);
+                M.linear(gemm, normed_.f(), L.v_w, L.has_bias ? &L.v_b : nullptr, 1, H, kv_out, v_);
+            }
+
+            if (fused) {
+                gpu::launch_rope_qk_append(q_, k_, v_, cos_row, sin_row, nh, nkv, hd,
+                                           k_cache[li].f() + pos * kv_dim,
+                                           v_cache[li].f() + pos * kv_dim);
+            } else {
+                gpu::launch_rope(q_, cos_row, sin_row, 1, nh, hd);
+                gpu::launch_rope(k_, cos_row, sin_row, 1, nkv, hd);
+                gpu::launch_cache_append(k_, v_, k_cache[li].f(), v_cache[li].f(), 1, kv_dim, pos);
+            }
+            attention(li);
             M.linear(gemm, ctx_.f(), L.o_w, nullptr, 1, q_out, H, delta_.f());
-            gpu::launch_residual_add(h_.f(), delta_.f(), H);
-            gpu::launch_rmsnorm(h_.f(), L.post_attn_ln.bf(), float(cfg.rms_norm_eps), 1, H, normed_.f());
-            M.linear(gemm, normed_.f(), L.gate_w, nullptr, 1, H, I, gate_.f());
-            M.linear(gemm, normed_.f(), L.up_w, nullptr, 1, H, I, up_.f());
-            gpu::launch_swiglu(gate_.f(), up_.f(), I);
-            M.linear(gemm, gate_.f(), L.down_w, nullptr, 1, I, H, delta_.f());
-            gpu::launch_residual_add(h_.f(), delta_.f(), H);
+
+            if (fused) {
+                gpu::launch_add_rmsnorm(h_.f(), delta_.f(), L.post_attn_ln.bf(), eps, H, normed_.f());
+            } else {
+                gpu::launch_residual_add(h_.f(), delta_.f(), H);
+                gpu::launch_rmsnorm(h_.f(), L.post_attn_ln.bf(), eps, 1, H, normed_.f());
+            }
+
+            if (fused_gemv) {
+                gpu::launch_gemv_rowpar(normed_.f(), L.gate_w.bf(), nullptr, 1, H, 2 * I, gate_);
+            } else {
+                M.linear(gemm, normed_.f(), L.gate_w, nullptr, 1, H, I, gate_);
+                M.linear(gemm, normed_.f(), L.up_w, nullptr, 1, H, I, up_);
+            }
+            gpu::launch_swiglu(gate_, up_, I);
+            M.linear(gemm, gate_, L.down_w, nullptr, 1, I, H, delta_.f());
+
+            if (fused) {
+                // Close the layer and open the next one (or the final norm) at once.
+                const bool last = li + 1 == cfg.num_hidden_layers;
+                const DevTensor& next_norm = last ? M.final_norm : M.layers[li + 1].input_ln;
+                gpu::launch_add_rmsnorm(h_.f(), delta_.f(), next_norm.bf(), eps, H, normed_.f());
+            } else {
+                gpu::launch_residual_add(h_.f(), delta_.f(), H);
+            }
         }
         pos++;
 
-        gpu::launch_rmsnorm(h_.f(), M.final_norm.bf(), float(cfg.rms_norm_eps), 1, H, normed_.f());
-        DevBuf d_logits(size_t(V) * 4);
-        M.linear(gemm, normed_.f(), M.embed_tokens, nullptr, 1, H, V, d_logits.f());
-        std::vector<float> logits(V);
-        CUDA_CHECK(cudaMemcpy(logits.data(), d_logits.p, size_t(V) * 4, cudaMemcpyDeviceToHost));
-        return logits;
+        if (!fused) gpu::launch_rmsnorm(h_.f(), M.final_norm.bf(), eps, 1, H, normed_.f());
+        return lm_head_to_host();
     }
 };
 
-GpuSession::GpuSession(GpuModel& m, int64_t max_seq, GemmPath gemm, AttnPath attn)
-    : impl_(new Impl(m, max_seq, gemm, attn)) {}
+GpuSession::GpuSession(GpuModel& m, int64_t max_seq, GemmPath gemm, AttnPath attn,
+                       StepPath step)
+    : impl_(new Impl(m, max_seq, gemm, attn, step)) {}
 GpuSession::~GpuSession() = default;
 std::vector<float> GpuSession::prefill(const std::vector<int64_t>& ids) {
     return impl_->prefill(ids);
@@ -183,8 +244,8 @@ int64_t GpuSession::position() const { return impl_->pos; }
 std::vector<int64_t> greedy_decode_cached_gpu(GpuModel& m,
                                               const std::vector<int64_t>& ids, int n_new,
                                               int64_t max_seq, GemmPath gemm,
-                                              AttnPath attn) {
-    GpuSession s(m, max_seq, gemm, attn);
+                                              AttnPath attn, StepPath step) {
+    GpuSession s(m, max_seq, gemm, attn, step);
     std::vector<float> logits = s.prefill(ids);
     std::vector<int64_t> out;
     const int64_t V = m.cfg().vocab_size;

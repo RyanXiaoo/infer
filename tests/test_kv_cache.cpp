@@ -88,28 +88,32 @@ int main(int argc, char** argv) {
     }
 
 #ifdef HAVE_GPU
-    // GPU: cached vs recompute must produce identical streams on both GEMM paths
-    // and with both decode-attention kernels (naive reference, Stage 5 parallel).
+    // GPU: cached vs recompute must produce identical token streams for every
+    // combination of GEMM path, decode-attention kernel and decode-step sequence.
+    // Recompute runs T > 1 (Stage 3 kernels); cached runs the Stage 5 T = 1 kernels.
     llm::GpuModel gpu(model);
     for (llm::GemmPath gemm : {llm::GemmPath::kMineNaive, llm::GemmPath::kMine, llm::GemmPath::kCublas})
-    for (llm::AttnPath attn : {llm::AttnPath::kNaive, llm::AttnPath::kParallel}) {
-        const std::string gs = std::string(llm::gemm_path_name(gemm)) +
-                               (attn == llm::AttnPath::kNaive ? "/attn-naive" : "/attn-par");
-        const char* gname = gs.c_str();
         for (int pi = 0; pi < n_prompts; pi++) {
             auto g = llm::npy::load_npz(golden + "/prompt" + std::to_string(pi) + "_bf16.npz");
             const auto& ia = g.at("token_ids");
             std::vector<int64_t> ids(ia.i64(), ia.i64() + ia.numel());
             std::vector<int64_t> rec = llm::greedy_decode_gpu(gpu, ids, N, gemm);
-            std::vector<int64_t> cac = llm::greedy_decode_cached_gpu(gpu, ids, N, 512, gemm, attn);
-            if (rec != cac) {
-                std::printf("FAIL gpu/%s prompt%d: token streams differ\n", gname, pi);
-                failures++;
-            } else {
-                std::printf("gpu/%s prompt%d: streams identical (%d tokens)\n", gname, pi, N);
-            }
+            for (llm::AttnPath attn : {llm::AttnPath::kNaive, llm::AttnPath::kParallel})
+                for (llm::StepPath step : {llm::StepPath::kUnfused, llm::StepPath::kFused}) {
+                    const std::string name = std::string("gpu/") + llm::gemm_path_name(gemm) +
+                        (attn == llm::AttnPath::kNaive ? "/attn-naive" : "/attn-par") +
+                        (step == llm::StepPath::kUnfused ? "/unfused" : "/fused") +
+                        " prompt" + std::to_string(pi);
+                    std::vector<int64_t> cac =
+                        llm::greedy_decode_cached_gpu(gpu, ids, N, 512, gemm, attn, step);
+                    if (rec != cac) {
+                        std::printf("FAIL %s: token streams differ\n", name.c_str());
+                        failures++;
+                    } else {
+                        std::printf("%s: streams identical (%d tokens)\n", name.c_str(), N);
+                    }
+                }
         }
-    }
 #endif
 
     if (failures == 0) {
