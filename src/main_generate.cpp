@@ -5,6 +5,9 @@
 // prefill time, and decode tokens/sec.
 //
 // Usage: main_generate [prompt=0] [n_new=16] [device=cpu|gpu] [gemm=mine|cublas] [cache=on|off]
+//                      [attn=par|naive]
+//   attn picks the GPU decode-attention kernel (cache=on only): par is the Stage 5
+//   one-block-per-head kernel, naive the Stage 4 one-thread-per-head reference.
 //   cache=off is the Stage 3 full-recompute path; cache=on is the Stage 4
 //   KV-cache path. Both produce identical tokens; the gap is the whole point,
 //   and it GROWS with n_new (recompute is O(T) per token, cache is O(1) model work).
@@ -37,6 +40,7 @@ int main(int argc, char** argv) {
     const std::string device = argc > 3 ? argv[3] : "cpu";
     const std::string gemm = argc > 4 ? argv[4] : "mine";
     const bool cache = argc > 5 ? (std::string(argv[5]) != "off") : true;
+    const std::string attn = argc > 6 ? argv[6] : "par";
 
     llm::Model model;
     model.load(root + "/models/Qwen2.5-0.5B-Instruct");
@@ -46,8 +50,8 @@ int main(int argc, char** argv) {
     const auto& ids_arr = g.at("token_ids");
     std::vector<int64_t> ids(ids_arr.i64(), ids_arr.i64() + ids_arr.numel());
 
-    std::printf("prompt %d (%zu tokens), device=%s gemm=%s cache=%s:\n", prompt_idx,
-                ids.size(), device.c_str(), gemm.c_str(), cache ? "on" : "off");
+    std::printf("prompt %d (%zu tokens), device=%s gemm=%s cache=%s attn=%s:\n", prompt_idx,
+                ids.size(), device.c_str(), gemm.c_str(), cache ? "on" : "off", attn.c_str());
 
     double prefill_s = 0, decode_s = 0;
     std::vector<int64_t> out;
@@ -78,12 +82,13 @@ int main(int argc, char** argv) {
     } else if (device == "gpu") {
 #ifdef HAVE_GPU
         llm::GemmPath path = gemm == "cublas" ? llm::GemmPath::kCublas : llm::GemmPath::kMine;
+        llm::AttnPath apath = attn == "naive" ? llm::AttnPath::kNaive : llm::AttnPath::kParallel;
         llm::GpuModel gpu(model);
         if (cache) {
             const int64_t ms = n_new + int(ids.size()) + 8;
-            llm::GpuSession warm(gpu, ms, path);
+            llm::GpuSession warm(gpu, ms, path, apath);
             warm.prefill(ids);   // warm-up (context, cublas mirrors)
-            llm::GpuSession s(gpu, ms, path);
+            llm::GpuSession s(gpu, ms, path, apath);
             auto t0 = Clock::now();
             std::vector<float> logits = s.prefill(ids);
             prefill_s = since(t0);

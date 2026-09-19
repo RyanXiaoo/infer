@@ -16,6 +16,7 @@ struct GpuSession::Impl {
     GpuModel::Impl& M;
     const int64_t max_seq;
     const GemmPath gemm;
+    const AttnPath attn;
     int64_t pos = 0;
 
     // Per-layer device caches, [max_seq x kv_dim] fp32.
@@ -24,9 +25,12 @@ struct GpuSession::Impl {
 
     // Reused decode scratch (T=1).
     DevBuf d_id, h_, normed_, q_, k_, v_, ctx_, delta_, gate_, up_, d_cos, d_sin;
+    // Decode attention scores, [n_heads x max_seq]. One buffer serves every
+    // layer: a layer's scores are dead once its ctx is written.
+    DevBuf attn_scores_;
 
-    Impl(GpuModel& g, int64_t ms, GemmPath gm_path)
-        : gm(g), M(*g.impl_), max_seq(ms), gemm(gm_path) {
+    Impl(GpuModel& g, int64_t ms, GemmPath gm_path, AttnPath attn_path)
+        : gm(g), M(*g.impl_), max_seq(ms), gemm(gm_path), attn(attn_path) {
         const auto& c = M.cfg;
         kv_dim = c.num_key_value_heads * c.head_dim;
         const int64_t H = c.hidden_size, hd = c.head_dim, I = c.intermediate_size;
@@ -49,6 +53,7 @@ struct GpuSession::Impl {
         up_ = DevBuf(I * 4);
         d_cos = DevBuf(hd * 4);
         d_sin = DevBuf(hd * 4);
+        attn_scores_ = DevBuf(size_t(c.num_attention_heads) * max_seq * 4);
     }
 
     std::vector<float> prefill(const std::vector<int64_t>& ids) {
@@ -139,8 +144,13 @@ struct GpuSession::Impl {
             gpu::launch_rope(k_.f(), d_cos.f(), d_sin.f(), 1, nkv, hd);
             gpu::launch_cache_append(k_.f(), v_.f(), k_cache[li].f(), v_cache[li].f(), 1,
                                      kv_dim, pos);
-            gpu::launch_attention_cached(q_.f(), k_cache[li].f(), v_cache[li].f(),
-                                         cache_len, nh, nkv, hd, ctx_.f());
+            if (attn == AttnPath::kParallel)
+                gpu::launch_attention_cached_par(q_.f(), k_cache[li].f(), v_cache[li].f(),
+                                                 attn_scores_.f(), cache_len, nh, nkv, hd,
+                                                 ctx_.f());
+            else
+                gpu::launch_attention_cached(q_.f(), k_cache[li].f(), v_cache[li].f(),
+                                             cache_len, nh, nkv, hd, ctx_.f());
             M.linear(gemm, ctx_.f(), L.o_w, nullptr, 1, q_out, H, delta_.f());
             gpu::launch_residual_add(h_.f(), delta_.f(), H);
             gpu::launch_rmsnorm(h_.f(), L.post_attn_ln.bf(), float(cfg.rms_norm_eps), 1, H, normed_.f());
@@ -161,8 +171,8 @@ struct GpuSession::Impl {
     }
 };
 
-GpuSession::GpuSession(GpuModel& m, int64_t max_seq, GemmPath gemm)
-    : impl_(new Impl(m, max_seq, gemm)) {}
+GpuSession::GpuSession(GpuModel& m, int64_t max_seq, GemmPath gemm, AttnPath attn)
+    : impl_(new Impl(m, max_seq, gemm, attn)) {}
 GpuSession::~GpuSession() = default;
 std::vector<float> GpuSession::prefill(const std::vector<int64_t>& ids) {
     return impl_->prefill(ids);
@@ -172,8 +182,9 @@ int64_t GpuSession::position() const { return impl_->pos; }
 
 std::vector<int64_t> greedy_decode_cached_gpu(GpuModel& m,
                                               const std::vector<int64_t>& ids, int n_new,
-                                              int64_t max_seq, GemmPath gemm) {
-    GpuSession s(m, max_seq, gemm);
+                                              int64_t max_seq, GemmPath gemm,
+                                              AttnPath attn) {
+    GpuSession s(m, max_seq, gemm, attn);
     std::vector<float> logits = s.prefill(ids);
     std::vector<int64_t> out;
     const int64_t V = m.cfg().vocab_size;

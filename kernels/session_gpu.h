@@ -15,7 +15,8 @@ namespace llm {
 
 class GpuSession {
 public:
-    GpuSession(GpuModel& m, int64_t max_seq = 512, GemmPath gemm = GemmPath::kMine);
+    GpuSession(GpuModel& m, int64_t max_seq = 512, GemmPath gemm = GemmPath::kMine,
+               AttnPath attn = AttnPath::kParallel);
     ~GpuSession();
     GpuSession(const GpuSession&) = delete;
     GpuSession& operator=(const GpuSession&) = delete;
@@ -33,6 +34,7 @@ private:
 std::vector<int64_t> greedy_decode_cached_gpu(GpuModel& m,
                                               const std::vector<int64_t>& ids,
                                               int n_new, int64_t max_seq = 512,
-                                              GemmPath gemm = GemmPath::kMine);
+                                              GemmPath gemm = GemmPath::kMine,
+                                              AttnPath attn = AttnPath::kParallel);
 
 } // namespace llm

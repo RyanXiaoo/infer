@@ -85,16 +85,20 @@ int main() {
     }
 
 #ifdef HAVE_GPU
-    // GPU: cached vs recompute must produce identical streams on both GEMM paths.
+    // GPU: cached vs recompute must produce identical streams on both GEMM paths
+    // and with both decode-attention kernels (naive reference, Stage 5 parallel).
     llm::GpuModel gpu(model);
-    for (llm::GemmPath gemm : {llm::GemmPath::kMine, llm::GemmPath::kCublas}) {
-        const char* gname = gemm == llm::GemmPath::kMine ? "mine" : "cublas";
+    for (llm::GemmPath gemm : {llm::GemmPath::kMine, llm::GemmPath::kCublas})
+    for (llm::AttnPath attn : {llm::AttnPath::kNaive, llm::AttnPath::kParallel}) {
+        const std::string gs = std::string(gemm == llm::GemmPath::kMine ? "mine" : "cublas") +
+                               (attn == llm::AttnPath::kNaive ? "/attn-naive" : "/attn-par");
+        const char* gname = gs.c_str();
         for (int pi = 0; pi < n_prompts; pi++) {
             auto g = llm::npy::load_npz(golden + "/prompt" + std::to_string(pi) + "_bf16.npz");
             const auto& ia = g.at("token_ids");
             std::vector<int64_t> ids(ia.i64(), ia.i64() + ia.numel());
             std::vector<int64_t> rec = llm::greedy_decode_gpu(gpu, ids, N, gemm);
-            std::vector<int64_t> cac = llm::greedy_decode_cached_gpu(gpu, ids, N, 512, gemm);
+            std::vector<int64_t> cac = llm::greedy_decode_cached_gpu(gpu, ids, N, 512, gemm, attn);
             if (rec != cac) {
                 std::printf("FAIL gpu/%s prompt%d: token streams differ\n", gname, pi);
                 failures++;

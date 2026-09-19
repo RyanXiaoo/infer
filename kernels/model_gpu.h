@@ -23,6 +23,12 @@ namespace llm {
 // and the honesty yardstick for Stage 5.
 enum class GemmPath { kMine, kCublas };
 
+// Which kernel serves single-query (decode) attention over the KV cache.
+// kNaive is the Stage 4 one-thread-per-head kernel, kept as the reference;
+// kParallel is the Stage 5 one-block-per-head kernel. Independent of GemmPath:
+// attention is always my kernel.
+enum class AttnPath { kNaive, kParallel };
+
 class GpuModel {
 public:
     // Uploads every weight tensor (bf16, byte-identical to the file) to the
