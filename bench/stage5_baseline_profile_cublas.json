@@ -1,0 +1,165 @@
+{
+  "what": "nsys decode-window summary (tools/nsys_kernel_summary.py)",
+  "source": "decode_cublas.sqlite",
+  "label": "Qwen2.5-0.5B prompt3 (12 tok) gemm=cublas cache=on, Stage 5 baseline, captured at 141a0b4",
+  "tokens": 64,
+  "window": "last 64 logits copies",
+  "summarized_at_commit": "141a0b47eeb15fc20d4d1e2fec67403c934a2873",
+  "summarized_at_dirty": true,
+  "per_token_ms": {
+    "window": 16.36123615625,
+    "gpu_busy": 13.01047471875,
+    "gpu_idle": 3.3507614375
+  },
+  "launches_per_token": 459.0,
+  "kernels": [
+    {
+      "name": "attention_cached_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.642616749,
+      "pct_gpu": 77.17540612607019,
+      "avg_us": 418.370279296875,
+      "ms_per_token": 10.040886703125
+    },
+    {
+      "name": "gemvx::kernel",
+      "mine": false,
+      "launches": 10752,
+      "total_s": 0.129788055,
+      "pct_gpu": 15.586966680412083,
+      "avg_us": 12.071061662946429,
+      "ms_per_token": 2.027938359375
+    },
+    {
+      "name": "gemv2T_kernel_val",
+      "mine": false,
+      "launches": 64,
+      "total_s": 0.041083203,
+      "pct_gpu": 4.933909490250128,
+      "avg_us": 641.925046875,
+      "ms_per_token": 0.641925046875
+    },
+    {
+      "name": "rmsnorm_kernel",
+      "mine": true,
+      "launches": 3136,
+      "total_s": 0.008649612,
+      "pct_gpu": 1.0387798325700506,
+      "avg_us": 2.7581670918367345,
+      "ms_per_token": 0.1351501875
+    },
+    {
+      "name": "add_bias_kernel",
+      "mine": true,
+      "launches": 4608,
+      "total_s": 0.003770681,
+      "pct_gpu": 0.4528419746290436,
+      "avg_us": 0.8182901475694444,
+      "ms_per_token": 0.058916890625
+    },
+    {
+      "name": "rope_kernel",
+      "mine": true,
+      "launches": 3072,
+      "total_s": 0.002720307,
+      "pct_gpu": 0.32669674084792893,
+      "avg_us": 0.8855166015625,
+      "ms_per_token": 0.042504796875
+    },
+    {
+      "name": "residual_add_kernel",
+      "mine": true,
+      "launches": 3072,
+      "total_s": 0.001756452,
+      "pct_gpu": 0.2109420531784929,
+      "avg_us": 0.57176171875,
+      "ms_per_token": 0.0274445625
+    },
+    {
+      "name": "swiglu_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.001181828,
+      "pct_gpu": 0.141932273027576,
+      "avg_us": 0.7694192708333334,
+      "ms_per_token": 0.0184660625
+    },
+    {
+      "name": "cache_append_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.001024071,
+      "pct_gpu": 0.12298636076622214,
+      "avg_us": 0.666712890625,
+      "ms_per_token": 0.016001109375
+    },
+    {
+      "name": "embedding_kernel",
+      "mine": true,
+      "launches": 64,
+      "total_s": 7.9424e-05,
+      "pct_gpu": 0.009538468248291795,
+      "avg_us": 1.241,
+      "ms_per_token": 0.001241
+    }
+  ],
+  "host_api": [
+    {
+      "name": "cudaMemcpy",
+      "calls": 256,
+      "total_s": 0.486586153,
+      "ms_per_token": 7.602908640625
+    },
+    {
+      "name": "cudaLaunchKernel",
+      "calls": 29376,
+      "total_s": 0.421021676,
+      "ms_per_token": 6.5784636875
+    },
+    {
+      "name": "cuStreamGetGreenCtx",
+      "calls": 21632,
+      "total_s": 0.007482392,
+      "ms_per_token": 0.116912375
+    },
+    {
+      "name": "cuKernelGetName",
+      "calls": 29376,
+      "total_s": 0.007120962,
+      "ms_per_token": 0.11126503125
+    },
+    {
+      "name": "cudaMalloc",
+      "calls": 64,
+      "total_s": 0.000490632,
+      "ms_per_token": 0.007666125
+    },
+    {
+      "name": "cudaFree",
+      "calls": 77,
+      "total_s": 0.000271084,
+      "ms_per_token": 0.0042356875
+    },
+    {
+      "name": "cuLibraryGetKernel",
+      "calls": 1,
+      "total_s": 9.01e-07,
+      "ms_per_token": 1.4078125e-05
+    }
+  ],
+  "memcpy": [
+    {
+      "kind": "HtoD",
+      "copies": 192,
+      "mb": 0.03328,
+      "total_s": 5.1232e-05
+    },
+    {
+      "kind": "DtoH",
+      "copies": 64,
+      "mb": 38.895616,
+      "total_s": 0.001424036
+    }
+  ]
+}
