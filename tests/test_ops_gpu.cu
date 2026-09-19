@@ -80,8 +80,19 @@ void attn_par(const float* q, const float* k, const float* v, int64_t len, int64
     });
 }
 
+template <int Threads, bool Interleaved>
+void gemv_rowpar(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* b, int64_t T,
+                 int64_t in, int64_t out, float* y) {
+    llm::gpu::launch_gemv_rowpar(x, W, b, T, in, out, y, Threads, Interleaved);
+}
+
 std::vector<GemvImpl> gemv_impls = {
     {"naive", llm::gpu::launch_linear_mine},
+    {"rowpar/auto", gemv_rowpar<0, true>},
+    {"rowpar/32", gemv_rowpar<32, true>},
+    {"rowpar/1024", gemv_rowpar<1024, true>},       // more threads than elements at small in
+    {"rowpar/64-contig", gemv_rowpar<64, false>},
+    {"rowpar/1024-contig", gemv_rowpar<1024, false>},
 };
 std::vector<AttnImpl> attn_impls = {
     {"naive", llm::gpu::launch_attention_cached},

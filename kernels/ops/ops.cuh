@@ -30,6 +30,14 @@ void launch_linear_mine(const float* x, const __nv_bfloat16* W,
                         const __nv_bfloat16* b, int64_t T, int64_t in,
                         int64_t out, float* y);
 
+// Stage 5 decode GEMV: one block per output row, `threads` threads (power of
+// two, <= 1024; 0 = auto) split the row's dot product and tree-reduce it.
+// `interleaved` picks strided vs contiguous element assignment (see linear.cu).
+// T != 1 falls back to launch_linear_mine.
+void launch_gemv_rowpar(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* b,
+                        int64_t T, int64_t in, int64_t out, float* y, int threads = 0,
+                        bool interleaved = true);
+
 // Elementwise bf16 -> fp32 (builds the cuBLAS path's fp32 weight mirrors).
 void launch_bf16_to_f32(const __nv_bfloat16* in, int64_t n, float* out);
 
