@@ -67,9 +67,19 @@ struct GemvImpl {
     void (*fn)(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* b, int64_t T,
                int64_t in, int64_t out, float* y);
 };
-// Optimized kernels get appended here as they land (Phase 2).
+template <int Threads, bool Interleaved>
+void rowpar(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* b, int64_t T,
+            int64_t in, int64_t out, float* y) {
+    llm::gpu::launch_gemv_rowpar(x, W, b, T, in, out, y, Threads, Interleaved);
+}
+// rowpar_N = N threads per output row, interleaved elements; _c = contiguous chunks.
 const GemvImpl kImpls[] = {
     {"gemv_naive", llm::gpu::launch_linear_mine},
+    {"rowpar_32", rowpar<32, true>},     {"rowpar_64", rowpar<64, true>},
+    {"rowpar_128", rowpar<128, true>},   {"rowpar_256", rowpar<256, true>},
+    {"rowpar_512", rowpar<512, true>},   {"rowpar_1024", rowpar<1024, true>},
+    {"rowpar_64c", rowpar<64, false>},   {"rowpar_256c", rowpar<256, false>},
+    {"rowpar_auto", rowpar<0, true>},
 };
 
 // Cheap deterministic fill: bf16 patterns for values in roughly [-0.06, 0.06].
