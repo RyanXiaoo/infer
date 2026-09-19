@@ -1,0 +1,271 @@
+{
+ "what": "ncu counters, one profiled launch per report (--set full), Stage 5 before/after",
+ "reports": {
+  "attn_naive_h12_hd128_len1024": {
+   "memory_busy_pct": 0.19,
+   "dram_throughput_pct": 0.01,
+   "duration_us": 27520.0,
+   "compute_throughput_pct": 0.05,
+   "sm_busy_pct": 0.02,
+   "memory_throughput_gbps": 0.08349,
+   "max_bandwidth_pct": 0.12,
+   "l1_hit_pct": 95.96,
+   "l2_hit_pct": 93.02,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.00 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 100% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 0.1653% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Speedup: 0.1653% The memory access pattern for global stores to L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Local Speedup: 96.57% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 89.55% On average, each warp of this workload spends 26.2 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 0.0313% Instructions are executed in warps, which are groups of 32 threads. Optimal instruction throughput is",
+    "Est. Speedup: 98.57% The grid for this launch is configured to execute only 1 block, which is less than the 70 multiprocessors",
+    "Est. Speedup: 96.57% The difference between calculated theoretical (100.0%) and measured achieved occupancy (2.1%) can be the",
+    "Est. Speedup: 1.918% This workload has uncoalesced global accesses resulting in a total of 6554880 excessive sectors (74% of the"
+   ]
+  },
+  "attn_naive_h14_hd64_len1024": {
+   "memory_busy_pct": 0.26,
+   "dram_throughput_pct": 0.01,
+   "duration_us": 11560.0,
+   "compute_throughput_pct": 0.06,
+   "sm_busy_pct": 0.02,
+   "memory_throughput_gbps": 0.11474,
+   "max_bandwidth_pct": 0.17,
+   "l1_hit_pct": 98.71,
+   "l2_hit_pct": 94.57,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.00 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 100% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 0.2257% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Speedup: 0.2257% The memory access pattern for global stores to L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Local Speedup: 95.94% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 87.26% On average, each warp of this workload spends 21.5 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 0.03362% Instructions are executed in warps, which are groups of 32 threads. Optimal instruction throughput is",
+    "Est. Speedup: 98.57% The grid for this launch is configured to execute only 1 block, which is less than the 70 multiprocessors",
+    "Est. Speedup: 95.94% The difference between calculated theoretical (100.0%) and measured achieved occupancy (2.1%) can be the",
+    "Est. Speedup: 4.314% This workload has uncoalesced global accesses resulting in a total of 3932928 excessive sectors (77% of the"
+   ]
+  },
+  "attn_naive_h14_hd64_len64": {
+   "memory_busy_pct": 0.28,
+   "dram_throughput_pct": 0.02,
+   "duration_us": 667.46,
+   "compute_throughput_pct": 0.06,
+   "sm_busy_pct": 0.02,
+   "memory_throughput_gbps": 0.13654,
+   "max_bandwidth_pct": 0.17,
+   "l1_hit_pct": 99.32,
+   "l2_hit_pct": 93.66,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.00 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 100% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 0.2449% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Speedup: 0.2449% The memory access pattern for global stores to L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Local Speedup: 95.59% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 86.14% On average, each warp of this workload spends 19.5 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 0.03645% Instructions are executed in warps, which are groups of 32 threads. Optimal instruction throughput is",
+    "Est. Speedup: 98.57% The grid for this launch is configured to execute only 1 block, which is less than the 70 multiprocessors",
+    "Est. Speedup: 95.59% The difference between calculated theoretical (100.0%) and measured achieved occupancy (2.1%) can be the",
+    "Est. Speedup: 4.034% This workload has uncoalesced global accesses resulting in a total of 246528 excessive sectors (77% of the"
+   ]
+  },
+  "attn_par_h12_hd128_len1024": {
+   "memory_busy_pct": 13.46,
+   "dram_throughput_pct": 3.19,
+   "duration_us": 75.46,
+   "compute_throughput_pct": 3.35,
+   "sm_busy_pct": 2.08,
+   "memory_throughput_gbps": 28.16,
+   "max_bandwidth_pct": 6.63,
+   "l1_hit_pct": 78.1,
+   "l2_hit_pct": 81.97,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.17 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 98.28% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 10.53% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 7.0 of the 32",
+    "Est. Local Speedup: 86.54% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 64.49% On average, each warp of this workload spends 42.1 cycles being stalled waiting for the L1 instruction queue",
+    "Est. Speedup: 82.86% The grid for this launch is configured to execute only 12 blocks, which is less than the 70 multiprocessors",
+    "Est. Speedup: 33.33% The 8.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the",
+    "Est. Speedup: 13.97% One or more SMs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 14.04% One or more SMSPs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 13.97% One or more L1 Slices have a much lower number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 65.96% This workload has uncoalesced global accesses resulting in a total of 1376256 excessive sectors (73% of the"
+   ]
+  },
+  "attn_par_h14_hd64_len1024": {
+   "memory_busy_pct": 13.16,
+   "dram_throughput_pct": 2.7,
+   "duration_us": 45.02,
+   "compute_throughput_pct": 3.27,
+   "sm_busy_pct": 2.05,
+   "memory_throughput_gbps": 23.84,
+   "max_bandwidth_pct": 5.49,
+   "l1_hit_pct": 78.77,
+   "l2_hit_pct": 85.16,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.07 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 98.31% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 10.28% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 7.0 of the 32",
+    "Est. Local Speedup: 86.84% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 85.45% On average, each warp of this workload spends 32.4 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 80% The grid for this launch is configured to execute only 14 blocks, which is less than the 70 multiprocessors",
+    "Est. Speedup: 66.84% The difference between calculated theoretical (100.0%) and measured achieved occupancy (33.2%) can be the",
+    "Est. Speedup: 15.67% One or more SMs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 15.55% One or more SMSPs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 15.67% One or more L1 Slices have a much lower number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 56.31% This workload has uncoalesced global accesses resulting in a total of 802816 excessive sectors (73% of the"
+   ]
+  },
+  "attn_par_h14_hd64_len64": {
+   "memory_busy_pct": 4.69,
+   "dram_throughput_pct": 1.12,
+   "duration_us": 9.25,
+   "compute_throughput_pct": 2.23,
+   "sm_busy_pct": 2.13,
+   "memory_throughput_gbps": 9.77,
+   "max_bandwidth_pct": 2.23,
+   "l1_hit_pct": 78.59,
+   "l2_hit_pct": 83.96,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.07 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 98.46% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 3.665% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 7.0 of the 32",
+    "Est. Local Speedup: 87.94% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 59.98% On average, each warp of this workload spends 19.6 cycles being stalled waiting for sibling warps at a CTA",
+    "Est. Speedup: 0.07703% This workload executes 4144 fused and 3136 non-fused FP32 instructions. By converting pairs of non-fused",
+    "Est. Speedup: 80% The grid for this launch is configured to execute only 14 blocks, which is less than the 70 multiprocessors",
+    "Est. Speedup: 67.4% The difference between calculated theoretical (100.0%) and measured achieved occupancy (32.6%) can be the",
+    "Est. Speedup: 14.15% One or more SMs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 14.13% One or more SMSPs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 14.15% One or more L1 Slices have a much lower number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 7.957% One or more L2 Slices have a much lower number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 26.02% This workload has uncoalesced global accesses resulting in a total of 50176 excessive sectors (73% of the"
+   ]
+  },
+  "gemv_naive_151936x1536": {
+   "memory_busy_pct": 80.09,
+   "dram_throughput_pct": 30.26,
+   "duration_us": 1760.0,
+   "compute_throughput_pct": 9.71,
+   "sm_busy_pct": 3.24,
+   "memory_throughput_gbps": 267.03,
+   "max_bandwidth_pct": 30.26,
+   "l1_hit_pct": 88.86,
+   "l2_hit_pct": 45.77,
+   "notes": [
+    "Est. Local Speedup: 98.45% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 74.94% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 2.1 of the 32",
+    "Est. Local Speedup: 19.91% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 19.91% On average, each warp of this workload spends 229.1 cycles being stalled waiting for the L1 instruction queue",
+    "Est. Speedup: 50% A wave of thread blocks is defined as the maximum number of blocks that can be executed in parallel on the",
+    "Est. Speedup: 19.91% The difference between calculated theoretical (100.0%) and measured achieved occupancy (75.7%) can be the",
+    "Est. Speedup: 5.213% One or more SMs have a much higher number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 5.711% One or more SMSPs have a much higher number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 5.213% One or more L1 Slices have a much higher number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 90.12% This workload has uncoalesced global accesses resulting in a total of 218787840 excessive sectors (91% of the"
+   ]
+  },
+  "gemv_naive_1536x8960": {
+   "memory_busy_pct": 8.18,
+   "dram_throughput_pct": 3.09,
+   "duration_us": 1010.0,
+   "compute_throughput_pct": 0.99,
+   "sm_busy_pct": 0.33,
+   "memory_throughput_gbps": 27.25,
+   "max_bandwidth_pct": 3.09,
+   "l1_hit_pct": 93.3,
+   "l2_hit_pct": 8.94,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.01 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 99.84% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 7.649% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 2.1 of the 32",
+    "Est. Local Speedup: 91.82% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 61.81% On average, each warp of this workload spends 35.7 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 32.55% On average, each warp of this workload spends 18.8 cycles being stalled waiting for the L1 instruction queue",
+    "Est. Speedup: 91.43% The grid for this launch is configured to execute only 6 blocks, which is less than the 70 multiprocessors",
+    "Est. Speedup: 83.4% The difference between calculated theoretical (100.0%) and measured achieved occupancy (16.6%) can be the",
+    "Est. Speedup: 7.818% One or more SMs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 7.801% One or more SMSPs have a much lower number of active cycles than the average number of active cycles. Maximum",
+    "Est. Speedup: 7.818% One or more L1 Slices have a much lower number of active cycles than the average number of active cycles.",
+    "Est. Speedup: 87.42% This workload has uncoalesced global accesses resulting in a total of 12902400 excessive sectors (91% of the"
+   ]
+  },
+  "gemv_naive_896x4864": {
+   "memory_busy_pct": 4.81,
+   "dram_throughput_pct": 1.82,
+   "duration_us": 544.06,
+   "compute_throughput_pct": 0.58,
+   "sm_busy_pct": 0.19,
+   "memory_throughput_gbps": 16.07,
+   "max_bandwidth_pct": 1.82,
+   "l1_hit_pct": 93.65,
+   "l2_hit_pct": 5.23,
+   "notes": [
+    "This kernel grid is too small to fill the available resources on this device, resulting in only 0.01 full waves across all SMs. Look at Launch Statistics for more details.",
+    "Est. Local Speedup: 99.91% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 4.503% The memory access pattern for global loads from L1TEX might not be optimal. On average, only 2.1 of the 32",
+    "Est. Local Speedup: 95.19% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 67.77% On average, each warp of this workload spends 36.8 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 94.29% The grid for this launch is configured to execute only 4 blocks, which is less than the 70 multiprocessors",
+    "Est. Speedup: 84.9% The difference between calculated theoretical (100.0%) and measured achieved occupancy (15.1%) can be the",
+    "Est. Speedup: 79.16% This workload has uncoalesced global accesses resulting in a total of 4085760 excessive sectors (91% of the"
+   ]
+  },
+  "gemv_rowpar_151936x1536": {
+   "memory_busy_pct": 93.04,
+   "dram_throughput_pct": 93.04,
+   "duration_us": 571.65,
+   "compute_throughput_pct": 43.24,
+   "sm_busy_pct": 27.06,
+   "memory_throughput_gbps": 820.96,
+   "max_bandwidth_pct": 93.04,
+   "l1_hit_pct": 66.31,
+   "l2_hit_pct": 1.71,
+   "notes": [
+    "Est. Speedup: 37.84% The memory access pattern for global stores to L1TEX might not be optimal. On average, only 4.0 of the 32",
+    "Est. Local Speedup: 6.96% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 6.96% On average, each warp of this workload spends 36.1 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 0.6865% This workload executes 7292928 fused and 1975168 non-fused FP32 instructions. By converting pairs of"
+   ]
+  },
+  "gemv_rowpar_1536x8960": {
+   "memory_busy_pct": 84.83,
+   "dram_throughput_pct": 84.83,
+   "duration_us": 36.83,
+   "compute_throughput_pct": 29.57,
+   "sm_busy_pct": 16.68,
+   "memory_throughput_gbps": 748.45,
+   "max_bandwidth_pct": 84.83,
+   "l1_hit_pct": 63.52,
+   "l2_hit_pct": 8.67,
+   "notes": [
+    "Est. Local Speedup: 83.32% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 38.81% The memory access pattern for global stores to L2 might not be optimal. On average, only 4.0 of the 32 bytes",
+    "Est. Local Speedup: 15.17% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 15.17% On average, each warp of this workload spends 56.1 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 11.53% The difference between calculated theoretical (100.0%) and measured achieved occupancy (88.5%) can be the"
+   ]
+  },
+  "gemv_rowpar_896x4864": {
+   "memory_busy_pct": 73.04,
+   "dram_throughput_pct": 73.04,
+   "duration_us": 13.6,
+   "compute_throughput_pct": 27.26,
+   "sm_busy_pct": 15.51,
+   "memory_throughput_gbps": 642.77,
+   "max_bandwidth_pct": 73.04,
+   "l1_hit_pct": 61.38,
+   "l2_hit_pct": 14.07,
+   "notes": [
+    "Memory is more heavily utilized than Compute: Look at the Memory Workload Analysis section to identify the DRAM bottleneck. Check memory replay (coalescing) metrics to make sure you're efficiently uti",
+    "Est. Local Speedup: 84.57% All compute pipelines are under-utilized. Either this workload is very small or it doesn't issue enough warps",
+    "Est. Speedup: 33.49% The memory access pattern for global stores to L2 might not be optimal. On average, only 4.0 of the 32 bytes",
+    "Est. Local Speedup: 26.96% Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only",
+    "Est. Speedup: 26.96% On average, each warp of this workload spends 29.7 cycles being stalled waiting for a scoreboard dependency",
+    "Est. Speedup: 26.96% The difference between calculated theoretical (100.0%) and measured achieved occupancy (50.6%) can be the"
+   ]
+  }
+ }
+}
