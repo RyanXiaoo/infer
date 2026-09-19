@@ -32,7 +32,10 @@
 static int failures = 0;
 static constexpr int N = 32;
 
-int main() {
+// --gpu-only skips the CPU half (minutes of single-threaded recompute) when
+// iterating on GPU kernels; ctest always runs the full test.
+int main(int argc, char** argv) {
+    const bool gpu_only = argc > 1 && std::string(argv[1]) == "--gpu-only";
     const std::string root = MODEL_ROOT;
     const std::string golden = root + "/tests/golden";
 
@@ -44,7 +47,7 @@ int main() {
     llm::Model model;
     model.load(root + "/models/Qwen2.5-0.5B-Instruct");
 
-    for (int pi = 0; pi < n_prompts; pi++) {
+    for (int pi = 0; pi < n_prompts && !gpu_only; pi++) {
         const std::string tag = "prompt" + std::to_string(pi);
         auto g = llm::npy::load_npz(golden + "/" + tag + "_bf16.npz");
         const auto& ids_arr = g.at("token_ids");
@@ -88,9 +91,9 @@ int main() {
     // GPU: cached vs recompute must produce identical streams on both GEMM paths
     // and with both decode-attention kernels (naive reference, Stage 5 parallel).
     llm::GpuModel gpu(model);
-    for (llm::GemmPath gemm : {llm::GemmPath::kMine, llm::GemmPath::kCublas})
+    for (llm::GemmPath gemm : {llm::GemmPath::kMineNaive, llm::GemmPath::kMine, llm::GemmPath::kCublas})
     for (llm::AttnPath attn : {llm::AttnPath::kNaive, llm::AttnPath::kParallel}) {
-        const std::string gs = std::string(gemm == llm::GemmPath::kMine ? "mine" : "cublas") +
+        const std::string gs = std::string(llm::gemm_path_name(gemm)) +
                                (attn == llm::AttnPath::kNaive ? "/attn-naive" : "/attn-par");
         const char* gname = gs.c_str();
         for (int pi = 0; pi < n_prompts; pi++) {

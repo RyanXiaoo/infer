@@ -104,11 +104,16 @@ struct GpuModel::Impl {
     std::vector<DevLayer> layers;
     cublasHandle_t cublas = nullptr;
 
-    // linear dispatch: mine = the naive kernel; cublas = Sgemm on fp32 mirrors.
+    // linear dispatch: mine = row-parallel GEMV at T=1 (naive kernel for T>1),
+    // naive = the Stage 3 kernel always, cublas = Sgemm on fp32 mirrors.
     void linear(GemmPath path, const float* x, DevTensor& W, DevTensor* b,
                 int64_t T, int64_t in, int64_t out, float* y) {
-        if (path == GemmPath::kMine) {
+        if (path == GemmPath::kMineNaive) {
             gpu::launch_linear_mine(x, W.bf(), b ? b->bf() : nullptr, T, in, out, y);
+            return;
+        }
+        if (path == GemmPath::kMine) {
+            gpu::launch_gemv_rowpar(x, W.bf(), b ? b->bf() : nullptr, T, in, out, y);
             return;
         }
         // Row-major y[T,out] = x[T,in] * W^T. In cuBLAS column-major terms:

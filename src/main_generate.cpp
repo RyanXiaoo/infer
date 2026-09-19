@@ -4,8 +4,9 @@
 // (tests/golden/prompt<i>_bf16.npz). Greedy-decodes n tokens, printing IDs,
 // prefill time, and decode tokens/sec.
 //
-// Usage: main_generate [prompt=0] [n_new=16] [device=cpu|gpu] [gemm=mine|cublas] [cache=on|off]
-//                      [attn=par|naive]
+// Usage: main_generate [prompt=0] [n_new=16] [device=cpu|gpu] [gemm=mine|cublas|naive]
+//                      [cache=on|off] [attn=par|naive]
+//   gemm: mine = Stage 5 row-parallel decode GEMV, naive = Stage 3 kernel, cublas = yardstick.
 //   attn picks the GPU decode-attention kernel (cache=on only): par is the Stage 5
 //   one-block-per-head kernel, naive the Stage 4 one-thread-per-head reference.
 //   cache=off is the Stage 3 full-recompute path; cache=on is the Stage 4
@@ -81,7 +82,7 @@ int main(int argc, char** argv) {
         }
     } else if (device == "gpu") {
 #ifdef HAVE_GPU
-        llm::GemmPath path = gemm == "cublas" ? llm::GemmPath::kCublas : llm::GemmPath::kMine;
+        llm::GemmPath path = llm::gemm_path_from(gemm);
         llm::AttnPath apath = attn == "naive" ? llm::AttnPath::kNaive : llm::AttnPath::kParallel;
         llm::GpuModel gpu(model);
         if (cache) {

@@ -99,8 +99,11 @@ int main() {
         if (gf) greedy = nlohmann::json::parse(gf);
     }
 
+    // The ladder runs T > 1 (prefill-shaped), which kMine serves with the same
+    // kernel as kMineNaive; the T = 1 row-parallel GEMV is covered by
+    // test_ops_gpu (edge sizes) and test_kv_cache (token streams).
     for (llm::GemmPath gemm : {llm::GemmPath::kMine, llm::GemmPath::kCublas}) {
-        const std::string gname = gemm == llm::GemmPath::kMine ? "mine" : "cublas";
+        const std::string gname = llm::gemm_path_name(gemm);
 
         for (int pi = 0; pi < n_prompts; pi++) {
             const std::string tag = "prompt" + std::to_string(pi) + "/" + gname;

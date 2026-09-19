@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         auto next = [&]() { return std::string(i + 1 < argc ? argv[++i] : ""); };
         if (a == "cpu" || a == "gpu") device = a;
-        else if (a == "mine" || a == "cublas") gemm = a;
+        else if (a == "mine" || a == "cublas" || a == "naive") gemm = a;
         else if (a == "--temp") temp = std::stof(next());
         else if (a == "--top-k") top_k = std::stoi(next());
         else if (a == "--top-p") top_p = std::stof(next());
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
 
 #ifdef HAVE_GPU
     std::unique_ptr<llm::GpuModel> gpu;
-    llm::GemmPath path = gemm == "cublas" ? llm::GemmPath::kCublas : llm::GemmPath::kMine;
+    llm::GemmPath path = llm::gemm_path_from(gemm);
     if (device == "gpu") gpu = std::make_unique<llm::GpuModel>(model);
 #endif
 

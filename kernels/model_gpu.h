@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace llm {
@@ -21,7 +22,19 @@ namespace llm {
 // kCublas is the bisection tool (ladder fails on mine but passes on cublas ->
 // the bug is in my GEMV; fails on both -> it's in RoPE/attention/norm/glue)
 // and the honesty yardstick for Stage 5.
-enum class GemmPath { kMine, kCublas };
+//
+// kMine serves decode (T = 1) with the Stage 5 row-parallel GEMV and prefill
+// (T > 1) with the Stage 3 kernel. kMineNaive is the Stage 3 one-thread-per-
+// output kernel everywhere: the correctness reference and the "before" number.
+enum class GemmPath { kMine, kCublas, kMineNaive };
+
+inline GemmPath gemm_path_from(const std::string& s) {
+    return s == "cublas" ? GemmPath::kCublas : s == "naive" ? GemmPath::kMineNaive
+                                                            : GemmPath::kMine;
+}
+inline const char* gemm_path_name(GemmPath p) {
+    return p == GemmPath::kCublas ? "cublas" : p == GemmPath::kMineNaive ? "naive" : "mine";
+}
 
 // Which kernel serves single-query (decode) attention over the KV cache.
 // kNaive is the Stage 4 one-thread-per-head kernel, kept as the reference;
