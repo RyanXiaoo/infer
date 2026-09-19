@@ -8,6 +8,7 @@
 
 #include "model.h"
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
