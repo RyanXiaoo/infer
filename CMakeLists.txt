@@ -105,6 +105,10 @@ if(CMAKE_CUDA_COMPILER)
   add_executable(stream_bench kernels/bench/stream_bench.cu)
   target_link_libraries(stream_bench PRIVATE bench_harness)
 
+  # Stage 5: single-variant, single-shape driver for ncu counter collection.
+  add_executable(profile_one kernels/bench/profile_one.cu)
+  target_link_libraries(profile_one PRIVATE engine_gpu)
+
   # Stage 5: cached decode attention microbench (us/launch vs cache_len, per variant).
   add_executable(attn_bench kernels/bench/attn_bench.cu)
   target_link_libraries(attn_bench PRIVATE bench_harness engine_gpu)
