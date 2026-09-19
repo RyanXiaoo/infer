@@ -27,20 +27,23 @@ GpuModel::GpuModel(const Model& m) : impl_(new Impl) {
     for (size_t i = 0; i < m.layers.size(); i++) {
         const LayerWeights& L = m.layers[i];
         DevLayer& D = impl_->layers[i];
-        D.q_w.upload(L.q_w);
-        D.k_w.upload(L.k_w);
-        D.v_w.upload(L.v_w);
+        D.qkv_w_buf = DevBuf(size_t(L.q_w->numel() + L.k_w->numel() + L.v_w->numel()) * 2);
+        D.q_w.upload_into(L.q_w, D.qkv_w_buf.bf());
+        D.k_w.upload_into(L.k_w, D.qkv_w_buf.bf() + L.q_w->numel());
+        D.v_w.upload_into(L.v_w, D.qkv_w_buf.bf() + L.q_w->numel() + L.k_w->numel());
         D.o_w.upload(L.o_w);
-        D.gate_w.upload(L.gate_w);
-        D.up_w.upload(L.up_w);
+        D.gate_up_buf = DevBuf(size_t(L.gate_w->numel() + L.up_w->numel()) * 2);
+        D.gate_w.upload_into(L.gate_w, D.gate_up_buf.bf());
+        D.up_w.upload_into(L.up_w, D.gate_up_buf.bf() + L.gate_w->numel());
         D.down_w.upload(L.down_w);
         D.input_ln.upload(L.input_ln);
         D.post_attn_ln.upload(L.post_attn_ln);
         D.has_bias = L.q_b != nullptr;
         if (D.has_bias) {
-            D.q_b.upload(L.q_b);
-            D.k_b.upload(L.k_b);
-            D.v_b.upload(L.v_b);
+            D.qkv_b_buf = DevBuf(size_t(L.q_b->numel() + L.k_b->numel() + L.v_b->numel()) * 2);
+            D.q_b.upload_into(L.q_b, D.qkv_b_buf.bf());
+            D.k_b.upload_into(L.k_b, D.qkv_b_buf.bf() + L.q_b->numel());
+            D.v_b.upload_into(L.v_b, D.qkv_b_buf.bf() + L.q_b->numel() + L.k_b->numel());
         }
     }
     CUBLAS_CHECK(cublasCreate(&impl_->cublas));

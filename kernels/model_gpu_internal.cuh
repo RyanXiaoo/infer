@@ -53,8 +53,19 @@ struct DevBuf {
 // One uploaded weight: bf16 always; fp32 mirror built on first cuBLAS use.
 struct DevTensor {
     DevBuf bf16;
+    const __nv_bfloat16* view = nullptr;   // set instead of bf16 by upload_into
     DevBuf f32;          // empty until ensure_f32
     int64_t numel = 0;
+
+    // Upload into a slice of a buffer owned by someone else. Used so q|k|v and
+    // gate|up sit back to back in device memory: row-major [out, in] matrices
+    // with the same `in` concatenate into one [sum(out), in] matrix, which the
+    // row-parallel GEMV (one block per output row) serves in a single launch.
+    void upload_into(const Tensor* t, __nv_bfloat16* dst) {
+        numel = t->numel();
+        CUDA_CHECK(cudaMemcpy(dst, t->u16(), size_t(numel) * 2, cudaMemcpyHostToDevice));
+        view = dst;
+    }
 
     void upload(const Tensor* t) {
         numel = t->numel();
@@ -62,11 +73,11 @@ struct DevTensor {
         CUDA_CHECK(cudaMemcpy(bf16.p, t->u16(), size_t(numel) * 2,
                               cudaMemcpyHostToDevice));
     }
-    const __nv_bfloat16* bf() const { return bf16.bf(); }
+    const __nv_bfloat16* bf() const { return view ? view : bf16.bf(); }
     const float* ensure_f32() {
         if (!f32.p) {
             f32 = DevBuf(size_t(numel) * 4);
-            gpu::launch_bf16_to_f32(bf16.bf(), numel, f32.f());
+            gpu::launch_bf16_to_f32(bf(), numel, f32.f());
         }
         return f32.f();
     }
@@ -77,6 +88,9 @@ struct DevLayer {
     DevTensor gate_w, up_w, down_w;
     DevTensor input_ln, post_attn_ln;
     bool has_bias = false;
+    // Backing storage for the views: [q|k|v] weights, [q|k|v] biases, [gate|up].
+    // q_w.bf() / q_b.bf() / gate_w.bf() double as the fused matrices' bases.
+    DevBuf qkv_w_buf, qkv_b_buf, gate_up_buf;
 };
 
 // Host-side RoPE tables (duplicated-halves layout, fp32 inv_freq) for absolute
