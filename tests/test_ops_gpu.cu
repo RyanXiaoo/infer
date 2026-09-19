@@ -330,6 +330,57 @@ void test_attention(std::mt19937& rng, int64_t n_heads, int64_t n_kv, int64_t hd
     }
 }
 
+// ------------------------------------------------------ decode-step fusions
+//
+// The Phase 3 fused kernels claim to be bit-identical to the launches they
+// replace (same arithmetic, same order), so they are held to exact equality
+// against the unfused sequence rather than to a tolerance.
+void test_add_rmsnorm(std::mt19937& rng, int64_t H) {
+    std::vector<float> w_f;
+    std::vector<uint16_t> w_bits = rand_bf16(rng, size_t(H), 1.0f, w_f);
+    std::vector<float> h = randn(rng, size_t(H)), delta = randn(rng, size_t(H));
+    Dev<uint16_t> dw(w_bits);
+    Dev<float> dd(delta), h_ref(h), h_fus(h);
+    Dev<float> o_ref(std::vector<float>(size_t(H) + kCanary, kCanaryValue));
+    Dev<float> o_fus(std::vector<float>(size_t(H) + kCanary, kCanaryValue));
+    const auto* w = reinterpret_cast<const __nv_bfloat16*>(dw.p);
+
+    llm::gpu::launch_residual_add(h_ref.p, dd.p, H);
+    llm::gpu::launch_rmsnorm(h_ref.p, w, 1e-6f, 1, H, o_ref.p);
+    llm::gpu::launch_add_rmsnorm(h_fus.p, dd.p, w, 1e-6f, H, o_fus.p);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    const std::string what = "fused/add_rmsnorm H=" + std::to_string(H);
+    report(h_ref.download() == h_fus.download(), what + " residual", 1, 0, "(h differs)");
+    report(o_ref.download() == o_fus.download(), what + " output", 1, 0, "(out differs)");
+}
+
+void test_rope_qk_append(std::mt19937& rng, int64_t n_heads, int64_t n_kv, int64_t hd,
+                         int64_t pos) {
+    const int64_t kv_dim = n_kv * hd, rows = pos + 3;
+    std::vector<float> q = randn(rng, size_t(n_heads) * hd), k = randn(rng, size_t(kv_dim)),
+                       v = randn(rng, size_t(kv_dim)), c = randn(rng, size_t(hd)),
+                       s = randn(rng, size_t(hd));
+    std::vector<float> cache0(size_t(rows) * kv_dim, kCanaryValue);   // untouched rows = canaries
+    Dev<float> dc(c), ds(s), dv(v);
+    Dev<float> q_ref(q), k_ref(k), kc_ref(cache0), vc_ref(cache0);
+    Dev<float> q_fus(q), k_fus(k), kc_fus(cache0), vc_fus(cache0);
+
+    llm::gpu::launch_rope(q_ref.p, dc.p, ds.p, 1, n_heads, hd);
+    llm::gpu::launch_rope(k_ref.p, dc.p, ds.p, 1, n_kv, hd);
+    llm::gpu::launch_cache_append(k_ref.p, dv.p, kc_ref.p, vc_ref.p, 1, kv_dim, pos);
+    llm::gpu::launch_rope_qk_append(q_fus.p, k_fus.p, dv.p, dc.p, ds.p, n_heads, n_kv, hd,
+                                    kc_fus.p + pos * kv_dim, vc_fus.p + pos * kv_dim);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    const std::string what = "fused/rope_qk_append heads=" + std::to_string(n_heads) + "/" +
+                             std::to_string(n_kv) + " hd=" + std::to_string(hd) +
+                             " pos=" + std::to_string(pos);
+    report(q_ref.download() == q_fus.download(), what + " q", 1, 0, "(q differs)");
+    report(kc_ref.download() == kc_fus.download(), what + " k cache", 1, 0, "(k cache differs)");
+    report(vc_ref.download() == vc_fus.download(), what + " v cache", 1, 0, "(v cache differs)");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -375,6 +426,13 @@ int main(int argc, char** argv) {
                 test_attention(rng, L[0], L[1], L[2], len, Spike::kMiddle);
             }
         }
+
+    if (!selftest) {
+        for (int64_t H : {1, 255, 256, 257, 896, 1536}) test_add_rmsnorm(rng, H);
+        const int64_t rope_layouts[][3] = {{14, 2, 64}, {12, 2, 128}, {4, 4, 8}, {8, 1, 16}};
+        for (auto& L : rope_layouts)
+            for (int64_t pos : {0, 1, 77}) test_rope_qk_append(rng, L[0], L[1], L[2], pos);
+    }
 
     if (selftest) {
         // Every accuracy check must fail; the canary checks (the other half) pass.

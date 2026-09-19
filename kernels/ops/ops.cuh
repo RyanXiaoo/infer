@@ -49,6 +49,17 @@ void launch_add_bias(const __nv_bfloat16* b, int64_t T, int64_t out, float* y);
 void launch_rope(float* x, const float* cos_t, const float* sin_t, int64_t T,
                  int64_t n_heads, int64_t hd);
 
+// Stage 5 Phase 3 decode-step fusions (T = 1). Bit-identical to the launches
+// they replace; they exist to cut host launch count, not GPU time.
+//   add_rmsnorm:     h += delta; out = rmsnorm(h) * w        (was 2 launches)
+//   rope_qk_append:  rope(q) in place; rope(k) -> k_cache_row; v -> v_cache_row
+//                    (was 3 launches). cos_row/sin_row: this position's [hd] rows.
+void launch_add_rmsnorm(float* h, const float* delta, const __nv_bfloat16* w, float eps,
+                        int64_t H, float* out);
+void launch_rope_qk_append(float* q, const float* k, const float* v, const float* cos_row,
+                           const float* sin_row, int64_t n_heads, int64_t n_kv, int64_t hd,
+                           float* k_cache_row, float* v_cache_row);
+
 // GQA causal attention, one thread per (head, query position) — each thread
 // owns one score row in the global scratch buffer scores[nh*T*T] and mirrors
 // the CPU implementation exactly (scale, max-subtracted softmax, weighted mix).
