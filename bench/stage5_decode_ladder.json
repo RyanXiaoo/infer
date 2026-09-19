@@ -1,0 +1,154 @@
+{
+ "what": "Stage 5 end-to-end decode ladder: greedy decode tok/s on prompt3 (12 prompt tokens), main_generate wall clock",
+ "method": "median/min/max over repeated runs (7, or 3 for the slow gemm=naive rows); locked clocks SM 2527 / mem 14001 MHz",
+ "reading": "gemm=naive attn=naive step=unfused is the Stage 4 kernel set (it still benefits from the hoisted per-token host work, which has no off switch). Host-bound rows (several hundred tok/s) vary a lot run to run under WSL2; GPU-bound rows do not.",
+ "gpu": "NVIDIA GeForce RTX 5070 Ti",
+ "engine_commit": "0aefa64c68a97fa279b7294895dc6cd7a331c450",
+ "engine_commit_note": "only tests/test_loader.cpp differed from this commit when measured",
+ "tok_s": {
+  "0.5B gemm=naive attn=naive step=unfused n=32": {
+   "median": 29.326,
+   "min": 29.31,
+   "max": 29.354,
+   "runs": 3
+  },
+  "0.5B gemm=naive attn=naive step=unfused n=256": {
+   "median": 15.748,
+   "min": 15.74,
+   "max": 15.765,
+   "runs": 3
+  },
+  "0.5B gemm=naive attn=par step=unfused n=32": {
+   "median": 36.497,
+   "min": 36.415,
+   "max": 36.497,
+   "runs": 3
+  },
+  "0.5B gemm=naive attn=par step=unfused n=256": {
+   "median": 36.51,
+   "min": 36.486,
+   "max": 36.522,
+   "runs": 3
+  },
+  "0.5B gemm=mine attn=par step=unfused n=32": {
+   "median": 218.465,
+   "min": 100.347,
+   "max": 268.471,
+   "runs": 7
+  },
+  "0.5B gemm=mine attn=par step=unfused n=256": {
+   "median": 204.739,
+   "min": 168.806,
+   "max": 273.201,
+   "runs": 7
+  },
+  "0.5B gemm=mine attn=par step=fused n=32": {
+   "median": 355.42,
+   "min": 163.795,
+   "max": 404.276,
+   "runs": 7
+  },
+  "0.5B gemm=mine attn=par step=fused n=256": {
+   "median": 361.439,
+   "min": 234.583,
+   "max": 382.542,
+   "runs": 7
+  },
+  "0.5B gemm=cublas attn=naive step=unfused n=32": {
+   "median": 83.54,
+   "min": 79.417,
+   "max": 84.457,
+   "runs": 7
+  },
+  "0.5B gemm=cublas attn=naive step=unfused n=256": {
+   "median": 24.322,
+   "min": 24.292,
+   "max": 24.347,
+   "runs": 7
+  },
+  "0.5B gemm=cublas attn=par step=fused n=32": {
+   "median": 188.997,
+   "min": 105.683,
+   "max": 217.754,
+   "runs": 7
+  },
+  "0.5B gemm=cublas attn=par step=fused n=256": {
+   "median": 164.932,
+   "min": 119.154,
+   "max": 212.731,
+   "runs": 7
+  },
+  "1.5B gemm=naive attn=naive step=unfused n=32": {
+   "median": 13.536,
+   "min": 13.536,
+   "max": 13.54,
+   "runs": 3
+  },
+  "1.5B gemm=naive attn=naive step=unfused n=256": {
+   "median": 7.015,
+   "min": 7.009,
+   "max": 7.018,
+   "runs": 3
+  },
+  "1.5B gemm=naive attn=par step=unfused n=32": {
+   "median": 16.988,
+   "min": 16.98,
+   "max": 16.996,
+   "runs": 3
+  },
+  "1.5B gemm=naive attn=par step=unfused n=256": {
+   "median": 16.958,
+   "min": 16.954,
+   "max": 16.973,
+   "runs": 3
+  },
+  "1.5B gemm=mine attn=par step=unfused n=32": {
+   "median": 124.136,
+   "min": 83.178,
+   "max": 159.728,
+   "runs": 7
+  },
+  "1.5B gemm=mine attn=par step=unfused n=256": {
+   "median": 126.806,
+   "min": 106.21,
+   "max": 156.692,
+   "runs": 7
+  },
+  "1.5B gemm=mine attn=par step=fused n=32": {
+   "median": 180.692,
+   "min": 141.643,
+   "max": 182.065,
+   "runs": 7
+  },
+  "1.5B gemm=mine attn=par step=fused n=256": {
+   "median": 178.46,
+   "min": 175.555,
+   "max": 179.281,
+   "runs": 7
+  },
+  "1.5B gemm=cublas attn=naive step=unfused n=32": {
+   "median": 48.763,
+   "min": 47.653,
+   "max": 49.3,
+   "runs": 7
+  },
+  "1.5B gemm=cublas attn=naive step=unfused n=256": {
+   "median": 14.572,
+   "min": 14.566,
+   "max": 14.6,
+   "runs": 7
+  },
+  "1.5B gemm=cublas attn=par step=fused n=32": {
+   "median": 98.174,
+   "min": 81.618,
+   "max": 101.115,
+   "runs": 7
+  },
+  "1.5B gemm=cublas attn=par step=fused n=256": {
+   "median": 94.255,
+   "min": 80.617,
+   "max": 97.02,
+   "runs": 7
+  }
+ }
+}

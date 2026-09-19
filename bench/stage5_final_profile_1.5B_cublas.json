@@ -1,0 +1,141 @@
+{
+  "what": "nsys decode-window summary (tools/nsys_kernel_summary.py)",
+  "source": "final_1.5B_cublas.sqlite",
+  "label": "Qwen2.5-1.5B-Instruct prompt3 gemm=cublas attn=par step=fused, Stage 5 final",
+  "tokens": 64,
+  "window": "last 64 logits copies",
+  "summarized_at_commit": "0aefa64c68a97fa279b7294895dc6cd7a331c450",
+  "summarized_at_dirty": true,
+  "per_token_ms": {
+    "window": 10.24687675,
+    "gpu_busy": 8.493239,
+    "gpu_idle": 1.75363775
+  },
+  "launches_per_token": 423.0,
+  "kernels": [
+    {
+      "name": "gemvx::kernel",
+      "mine": false,
+      "launches": 12608,
+      "total_s": 0.508682044,
+      "pct_gpu": 93.5821650315033,
+      "avg_us": 40.34597430203046,
+      "ms_per_token": 7.9481569375
+    },
+    {
+      "name": "attention_cached_par_kernel",
+      "mine": true,
+      "launches": 1792,
+      "total_s": 0.016917457,
+      "pct_gpu": 3.112302216209858,
+      "avg_us": 9.440545200892856,
+      "ms_per_token": 0.264335265625
+    },
+    {
+      "name": "add_rmsnorm_kernel",
+      "mine": true,
+      "launches": 3584,
+      "total_s": 0.010549937,
+      "pct_gpu": 1.9408704455979633,
+      "avg_us": 2.9436208147321428,
+      "ms_per_token": 0.164842765625
+    },
+    {
+      "name": "add_bias_kernel",
+      "mine": true,
+      "launches": 5376,
+      "total_s": 0.003639885,
+      "pct_gpu": 0.669629138247493,
+      "avg_us": 0.6770619419642857,
+      "ms_per_token": 0.056873203125
+    },
+    {
+      "name": "rope_qk_append_kernel",
+      "mine": true,
+      "launches": 1792,
+      "total_s": 0.002038597,
+      "pct_gpu": 0.3750404071403148,
+      "avg_us": 1.1376099330357141,
+      "ms_per_token": 0.031853078125
+    },
+    {
+      "name": "swiglu_kernel",
+      "mine": true,
+      "launches": 1792,
+      "total_s": 0.001510575,
+      "pct_gpu": 0.2779002730878055,
+      "avg_us": 0.8429547991071429,
+      "ms_per_token": 0.023602734375
+    },
+    {
+      "name": "rmsnorm_kernel",
+      "mine": true,
+      "launches": 64,
+      "total_s": 0.000160064,
+      "pct_gpu": 0.02944695186371183,
+      "avg_us": 2.501,
+      "ms_per_token": 0.002501
+    },
+    {
+      "name": "embedding_kernel",
+      "mine": true,
+      "launches": 64,
+      "total_s": 6.8737e-05,
+      "pct_gpu": 0.012645536349559927,
+      "avg_us": 1.074015625,
+      "ms_per_token": 0.001074015625
+    }
+  ],
+  "host_api": [
+    {
+      "name": "cudaLaunchKernel",
+      "calls": 27072,
+      "total_s": 0.340519574,
+      "ms_per_token": 5.32061834375
+    },
+    {
+      "name": "cudaMemcpy",
+      "calls": 128,
+      "total_s": 0.21560587,
+      "ms_per_token": 3.36884171875
+    },
+    {
+      "name": "cuStreamGetGreenCtx",
+      "calls": 25216,
+      "total_s": 0.005273819,
+      "ms_per_token": 0.082403421875
+    },
+    {
+      "name": "cuKernelGetName",
+      "calls": 27072,
+      "total_s": 0.004275732,
+      "ms_per_token": 0.0668083125
+    },
+    {
+      "name": "cudaFree",
+      "calls": 13,
+      "total_s": 2.172e-05,
+      "ms_per_token": 0.000339375
+    },
+    {
+      "name": "cuLibraryGetKernel",
+      "calls": 3,
+      "total_s": 2.826e-06,
+      "ms_per_token": 4.415625e-05
+    }
+  ],
+  "memcpy": [
+    {
+      "kind": "HtoD",
+      "copies": 64,
+      "mb": 0.000512,
+      "total_s": 1.6673e-05
+    },
+    {
+      "kind": "DtoH",
+      "copies": 64,
+      "mb": 38.895616,
+      "total_s": 0.001361448
+    }
+  ]
+}
