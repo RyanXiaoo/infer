@@ -1,0 +1,165 @@
+{
+  "what": "nsys decode-window summary (tools/nsys_kernel_summary.py)",
+  "source": "decode_cublas_attnpar.sqlite",
+  "label": "Qwen2.5-0.5B prompt3 (12 tok) gemm=cublas cache=on attn=par, after Stage 5 Phase 1 (uncommitted tree on 4d3962d)",
+  "tokens": 64,
+  "window": "last 64 logits copies",
+  "summarized_at_commit": "141a0b47eeb15fc20d4d1e2fec67403c934a2873",
+  "summarized_at_dirty": true,
+  "per_token_ms": {
+    "window": 12.692079140625,
+    "gpu_busy": 3.226527578125,
+    "gpu_idle": 9.4655515625
+  },
+  "launches_per_token": 459.0,
+  "kernels": [
+    {
+      "name": "gemvx::kernel",
+      "mine": false,
+      "launches": 10752,
+      "total_s": 0.13213157,
+      "pct_gpu": 63.9869249916579,
+      "avg_us": 12.289022507440476,
+      "ms_per_token": 2.06455578125
+    },
+    {
+      "name": "gemv2T_kernel_val",
+      "mine": false,
+      "launches": 64,
+      "total_s": 0.041412023,
+      "pct_gpu": 20.05446548053438,
+      "avg_us": 647.062859375,
+      "ms_per_token": 0.647062859375
+    },
+    {
+      "name": "attention_cached_par_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.012315792,
+      "pct_gpu": 5.964128473739171,
+      "avg_us": 8.01809375,
+      "ms_per_token": 0.19243425
+    },
+    {
+      "name": "rmsnorm_kernel",
+      "mine": true,
+      "launches": 3136,
+      "total_s": 0.009221967,
+      "pct_gpu": 4.465891918975491,
+      "avg_us": 2.94067825255102,
+      "ms_per_token": 0.144093234375
+    },
+    {
+      "name": "add_bias_kernel",
+      "mine": true,
+      "launches": 4608,
+      "total_s": 0.004024033,
+      "pct_gpu": 1.948705352815804,
+      "avg_us": 0.8732710503472222,
+      "ms_per_token": 0.062875515625
+    },
+    {
+      "name": "rope_kernel",
+      "mine": true,
+      "launches": 3072,
+      "total_s": 0.002998512,
+      "pct_gpu": 1.452079638731199,
+      "avg_us": 0.976078125,
+      "ms_per_token": 0.04685175
+    },
+    {
+      "name": "residual_add_kernel",
+      "mine": true,
+      "launches": 3072,
+      "total_s": 0.001905876,
+      "pct_gpu": 0.9229523622204822,
+      "avg_us": 0.62040234375,
+      "ms_per_token": 0.0297793125
+    },
+    {
+      "name": "swiglu_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.001290955,
+      "pct_gpu": 0.6251665726261009,
+      "avg_us": 0.8404654947916667,
+      "ms_per_token": 0.020171171875
+    },
+    {
+      "name": "cache_append_kernel",
+      "mine": true,
+      "launches": 1536,
+      "total_s": 0.00111198,
+      "pct_gpu": 0.5384949323785659,
+      "avg_us": 0.7239453125,
+      "ms_per_token": 0.0173746875
+    },
+    {
+      "name": "embedding_kernel",
+      "mine": true,
+      "launches": 64,
+      "total_s": 8.5057e-05,
+      "pct_gpu": 0.04119027632090837,
+      "avg_us": 1.329015625,
+      "ms_per_token": 0.001329015625
+    }
+  ],
+  "host_api": [
+    {
+      "name": "cudaLaunchKernel",
+      "calls": 29376,
+      "total_s": 0.550381106,
+      "ms_per_token": 8.59970478125
+    },
+    {
+      "name": "cudaMemcpy",
+      "calls": 256,
+      "total_s": 0.092672669,
+      "ms_per_token": 1.448010453125
+    },
+    {
+      "name": "cuKernelGetName",
+      "calls": 29376,
+      "total_s": 0.008136011,
+      "ms_per_token": 0.127125171875
+    },
+    {
+      "name": "cuStreamGetGreenCtx",
+      "calls": 21632,
+      "total_s": 0.007680764,
+      "ms_per_token": 0.1200119375
+    },
+    {
+      "name": "cudaMalloc",
+      "calls": 64,
+      "total_s": 0.000373849,
+      "ms_per_token": 0.005841390625
+    },
+    {
+      "name": "cudaFree",
+      "calls": 77,
+      "total_s": 0.000251683,
+      "ms_per_token": 0.003932546875
+    },
+    {
+      "name": "cuLibraryGetKernel",
+      "calls": 1,
+      "total_s": 6.41e-07,
+      "ms_per_token": 1.0015625e-05
+    }
+  ],
+  "memcpy": [
+    {
+      "kind": "HtoD",
+      "copies": 192,
+      "mb": 0.03328,
+      "total_s": 5.344e-05
+    },
+    {
+      "kind": "DtoH",
+      "copies": 64,
+      "mb": 38.895616,
+      "total_s": 0.001427686
+    }
+  ]
+}
