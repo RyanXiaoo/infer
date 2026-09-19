@@ -1,0 +1,56 @@
+{
+ "what": "Stage 5 stream microbench, consolidated from per-run harness records (median of 50)",
+ "note": "dims ending _x20 are 20-launch bursts: divide median_ms by 20 for one launch",
+ "commit": "0aefa64c68a97fa279b7294895dc6cd7a331c450",
+ "dirty": false,
+ "gpu": "NVIDIA GeForce RTX 5070 Ti",
+ "driver": "591.86",
+ "cuda_toolkit": 13030,
+ "sm_clock_mhz_before": 2535,
+ "mem_clock_mhz": 13801,
+ "temp_c_before": 39,
+ "results": [
+  {
+   "kernel": "stream_add",
+   "dims": "n64M",
+   "median_ms": 1.02582,
+   "min_ms": 1.0208,
+   "max_ms": 1.05341
+  },
+  {
+   "kernel": "stream_copy",
+   "dims": "n64M",
+   "median_ms": 0.700768,
+   "min_ms": 0.698208,
+   "max_ms": 0.705472
+  },
+  {
+   "kernel": "stream_read_bf16",
+   "dims": "n64M",
+   "median_ms": 0.783232,
+   "min_ms": 0.780608,
+   "max_ms": 0.788448
+  },
+  {
+   "kernel": "stream_read_f32",
+   "dims": "n64M",
+   "median_ms": 0.390848,
+   "min_ms": 0.388576,
+   "max_ms": 0.4256
+  },
+  {
+   "kernel": "stream_scale",
+   "dims": "n64M",
+   "median_ms": 0.7236,
+   "min_ms": 0.703488,
+   "max_ms": 0.731808
+  },
+  {
+   "kernel": "stream_triad",
+   "dims": "n64M",
+   "median_ms": 1.02349,
+   "min_ms": 1.01843,
+   "max_ms": 1.0303
+  }
+ ]
+}

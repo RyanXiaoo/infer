@@ -1,0 +1,784 @@
+{
+ "what": "Stage 5 gemv microbench, consolidated from per-run harness records (median of 50)",
+ "note": "dims ending _x20 are 20-launch bursts: divide median_ms by 20 for one launch",
+ "commit": "0aefa64c68a97fa279b7294895dc6cd7a331c450",
+ "dirty": false,
+ "gpu": "NVIDIA GeForce RTX 5070 Ti",
+ "driver": "591.86",
+ "cuda_toolkit": 13030,
+ "sm_clock_mhz_before": 2535,
+ "mem_clock_mhz": 13801,
+ "temp_c_before": 38,
+ "results": [
+  {
+   "kernel": "gemv_cublas",
+   "dims": "128x896_x20",
+   "median_ms": 0.721024,
+   "min_ms": 0.604192,
+   "max_ms": 0.805312
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "128x896_x20",
+   "median_ms": 1.11267,
+   "min_ms": 1.10586,
+   "max_ms": 1.12272
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "128x896_x20",
+   "median_ms": 0.215792,
+   "min_ms": 0.148736,
+   "max_ms": 0.272672
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "128x896_x20",
+   "median_ms": 0.143168,
+   "min_ms": 0.104576,
+   "max_ms": 0.258464
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "128x896_x20",
+   "median_ms": 0.135776,
+   "min_ms": 0.105696,
+   "max_ms": 0.2224
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "128x896_x20",
+   "median_ms": 0.13992,
+   "min_ms": 0.103584,
+   "max_ms": 0.226304
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "128x896_x20",
+   "median_ms": 0.139392,
+   "min_ms": 0.107616,
+   "max_ms": 0.212096
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "128x896_x20",
+   "median_ms": 0.137424,
+   "min_ms": 0.106336,
+   "max_ms": 0.171424
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "128x896_x20",
+   "median_ms": 0.132224,
+   "min_ms": 0.102912,
+   "max_ms": 0.222144
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "128x896_x20",
+   "median_ms": 0.142112,
+   "min_ms": 0.103328,
+   "max_ms": 0.242976
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "128x896_x20",
+   "median_ms": 0.138384,
+   "min_ms": 0.109856,
+   "max_ms": 1.34934
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "151936x1536",
+   "median_ms": 1.14768,
+   "min_ms": 1.12259,
+   "max_ms": 1.16851
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "151936x1536",
+   "median_ms": 1.7611,
+   "min_ms": 1.75238,
+   "max_ms": 1.79184
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "151936x1536",
+   "median_ms": 4.76418,
+   "min_ms": 4.76029,
+   "max_ms": 4.79811
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "151936x1536",
+   "median_ms": 0.581424,
+   "min_ms": 0.560224,
+   "max_ms": 0.59152
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "151936x1536",
+   "median_ms": 0.764656,
+   "min_ms": 0.761408,
+   "max_ms": 0.773056
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "151936x1536",
+   "median_ms": 0.626256,
+   "min_ms": 0.606304,
+   "max_ms": 0.660928
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "151936x1536",
+   "median_ms": 0.594032,
+   "min_ms": 0.577856,
+   "max_ms": 0.618912
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "151936x1536",
+   "median_ms": 1.54171,
+   "min_ms": 1.53827,
+   "max_ms": 1.56269
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "151936x1536",
+   "median_ms": 0.563312,
+   "min_ms": 0.55872,
+   "max_ms": 0.584288
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "151936x1536",
+   "median_ms": 0.626848,
+   "min_ms": 0.622496,
+   "max_ms": 0.647104
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "151936x1536",
+   "median_ms": 0.562624,
+   "min_ms": 0.558848,
+   "max_ms": 0.578752
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "151936x896",
+   "median_ms": 0.65184,
+   "min_ms": 0.649792,
+   "max_ms": 0.691968
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "151936x896",
+   "median_ms": 0.990656,
+   "min_ms": 0.983232,
+   "max_ms": 1.12832
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "151936x896",
+   "median_ms": 4.10872,
+   "min_ms": 4.10579,
+   "max_ms": 4.11229
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "151936x896",
+   "median_ms": 0.428272,
+   "min_ms": 0.422464,
+   "max_ms": 0.444192
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "151936x896",
+   "median_ms": 0.678768,
+   "min_ms": 0.675104,
+   "max_ms": 0.732896
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "151936x896",
+   "median_ms": 0.553984,
+   "min_ms": 0.53376,
+   "max_ms": 0.58528
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "151936x896",
+   "median_ms": 0.337424,
+   "min_ms": 0.33536,
+   "max_ms": 0.375744
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "151936x896",
+   "median_ms": 1.31254,
+   "min_ms": 1.31005,
+   "max_ms": 1.33693
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "151936x896",
+   "median_ms": 0.335424,
+   "min_ms": 0.328768,
+   "max_ms": 0.354496
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "151936x896",
+   "median_ms": 0.330464,
+   "min_ms": 0.328224,
+   "max_ms": 0.336832
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "151936x896",
+   "median_ms": 0.335024,
+   "min_ms": 0.3296,
+   "max_ms": 0.355936
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.503168,
+   "min_ms": 0.313344,
+   "max_ms": 0.674112
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "1536x1536_x20",
+   "median_ms": 3.47035,
+   "min_ms": 3.44022,
+   "max_ms": 3.48906
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.870896,
+   "min_ms": 0.865056,
+   "max_ms": 0.902144
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.177984,
+   "min_ms": 0.151648,
+   "max_ms": 0.234624
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.218736,
+   "min_ms": 0.202464,
+   "max_ms": 0.284128
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.353184,
+   "min_ms": 0.21792,
+   "max_ms": 0.497184
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.1584,
+   "min_ms": 0.12784,
+   "max_ms": 0.236544
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.424048,
+   "min_ms": 0.356032,
+   "max_ms": 0.501824
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.166128,
+   "min_ms": 0.127424,
+   "max_ms": 0.216928
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.217584,
+   "min_ms": 0.207136,
+   "max_ms": 0.260928
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "1536x1536_x20",
+   "median_ms": 0.21248,
+   "min_ms": 0.153568,
+   "max_ms": 0.305792
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "1536x8960_x20",
+   "median_ms": 1.07739,
+   "min_ms": 1.04445,
+   "max_ms": 1.09338
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "1536x8960_x20",
+   "median_ms": 19.6896,
+   "min_ms": 19.6417,
+   "max_ms": 19.7366
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "1536x8960_x20",
+   "median_ms": 1.03115,
+   "min_ms": 1.02467,
+   "max_ms": 1.06835
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.373056,
+   "min_ms": 0.350112,
+   "max_ms": 0.397184
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.409824,
+   "min_ms": 0.383776,
+   "max_ms": 0.43504
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.869728,
+   "min_ms": 0.862464,
+   "max_ms": 0.885408
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.431152,
+   "min_ms": 0.34448,
+   "max_ms": 0.527968
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.530432,
+   "min_ms": 0.492992,
+   "max_ms": 0.611008
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.366112,
+   "min_ms": 0.3352,
+   "max_ms": 1.492
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "1536x8960_x20",
+   "median_ms": 1.38659,
+   "min_ms": 1.29133,
+   "max_ms": 1.53251
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "1536x8960_x20",
+   "median_ms": 0.344336,
+   "min_ms": 0.333408,
+   "max_ms": 0.4056
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "256x1536_x20",
+   "median_ms": 0.219504,
+   "min_ms": 0.148864,
+   "max_ms": 0.28
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "256x1536_x20",
+   "median_ms": 3.3624,
+   "min_ms": 3.34102,
+   "max_ms": 3.43933
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "256x1536_x20",
+   "median_ms": 0.23888,
+   "min_ms": 0.223648,
+   "max_ms": 0.273856
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "256x1536_x20",
+   "median_ms": 0.212752,
+   "min_ms": 0.12,
+   "max_ms": 0.277728
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "256x1536_x20",
+   "median_ms": 0.205344,
+   "min_ms": 0.128736,
+   "max_ms": 0.270816
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "256x1536_x20",
+   "median_ms": 0.200544,
+   "min_ms": 0.114272,
+   "max_ms": 0.237984
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "256x1536_x20",
+   "median_ms": 0.350944,
+   "min_ms": 0.230208,
+   "max_ms": 0.51184
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "256x1536_x20",
+   "median_ms": 0.21592,
+   "min_ms": 0.151808,
+   "max_ms": 0.273344
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "256x1536_x20",
+   "median_ms": 0.341984,
+   "min_ms": 0.201824,
+   "max_ms": 0.50352
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "256x1536_x20",
+   "median_ms": 0.200224,
+   "min_ms": 0.118784,
+   "max_ms": 0.264288
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "256x1536_x20",
+   "median_ms": 0.20616,
+   "min_ms": 0.153888,
+   "max_ms": 1.26797
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "4864x896_x20",
+   "median_ms": 0.280192,
+   "min_ms": 0.251104,
+   "max_ms": 0.351008
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "4864x896_x20",
+   "median_ms": 2.0269,
+   "min_ms": 2.01664,
+   "max_ms": 2.04013
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "4864x896_x20",
+   "median_ms": 2.35056,
+   "min_ms": 2.34096,
+   "max_ms": 2.39594
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "4864x896_x20",
+   "median_ms": 0.303136,
+   "min_ms": 0.286528,
+   "max_ms": 0.393632
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "4864x896_x20",
+   "median_ms": 0.618432,
+   "min_ms": 0.548544,
+   "max_ms": 0.701536
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "4864x896_x20",
+   "median_ms": 0.396464,
+   "min_ms": 0.380448,
+   "max_ms": 0.422464
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "4864x896_x20",
+   "median_ms": 0.546672,
+   "min_ms": 0.418272,
+   "max_ms": 0.702048
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "4864x896_x20",
+   "median_ms": 0.787744,
+   "min_ms": 0.77888,
+   "max_ms": 0.82288
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "4864x896_x20",
+   "median_ms": 0.25728,
+   "min_ms": 0.220992,
+   "max_ms": 1.94112
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "4864x896_x20",
+   "median_ms": 0.22136,
+   "min_ms": 0.206976,
+   "max_ms": 0.250752
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "4864x896_x20",
+   "median_ms": 0.218608,
+   "min_ms": 0.208576,
+   "max_ms": 0.26096
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "8960x1536_x20",
+   "median_ms": 1.11149,
+   "min_ms": 1.09709,
+   "max_ms": 1.13718
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "8960x1536_x20",
+   "median_ms": 3.50974,
+   "min_ms": 3.50128,
+   "max_ms": 3.5545
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "8960x1536_x20",
+   "median_ms": 4.69366,
+   "min_ms": 4.67251,
+   "max_ms": 4.72221
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.505616,
+   "min_ms": 0.498368,
+   "max_ms": 0.534688
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.783152,
+   "min_ms": 0.770272,
+   "max_ms": 0.811232
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.750144,
+   "min_ms": 0.74016,
+   "max_ms": 0.773792
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.462928,
+   "min_ms": 0.410688,
+   "max_ms": 0.505472
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "8960x1536_x20",
+   "median_ms": 1.50595,
+   "min_ms": 1.48778,
+   "max_ms": 1.52486
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.452016,
+   "min_ms": 0.405792,
+   "max_ms": 0.551072
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.788064,
+   "min_ms": 0.781376,
+   "max_ms": 0.82896
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "8960x1536_x20",
+   "median_ms": 0.4004,
+   "min_ms": 0.383904,
+   "max_ms": 0.437632
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "896x4864_x20",
+   "median_ms": 0.245456,
+   "min_ms": 0.21248,
+   "max_ms": 0.279168
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "896x4864_x20",
+   "median_ms": 10.5173,
+   "min_ms": 10.4988,
+   "max_ms": 10.5582
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "896x4864_x20",
+   "median_ms": 0.583584,
+   "min_ms": 0.576704,
+   "max_ms": 0.606656
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "896x4864_x20",
+   "median_ms": 0.213792,
+   "min_ms": 0.203296,
+   "max_ms": 0.261792
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "896x4864_x20",
+   "median_ms": 0.216496,
+   "min_ms": 0.208544,
+   "max_ms": 0.313376
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "896x4864_x20",
+   "median_ms": 0.259072,
+   "min_ms": 0.248064,
+   "max_ms": 0.289376
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "896x4864_x20",
+   "median_ms": 0.220064,
+   "min_ms": 0.208864,
+   "max_ms": 0.272544
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "896x4864_x20",
+   "median_ms": 0.261968,
+   "min_ms": 0.251456,
+   "max_ms": 0.275424
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "896x4864_x20",
+   "median_ms": 0.191872,
+   "min_ms": 0.173056,
+   "max_ms": 1.45728
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "896x4864_x20",
+   "median_ms": 0.442512,
+   "min_ms": 0.428736,
+   "max_ms": 0.465184
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "896x4864_x20",
+   "median_ms": 0.201952,
+   "min_ms": 0.166208,
+   "max_ms": 0.254112
+  },
+  {
+   "kernel": "gemv_cublas",
+   "dims": "896x896_x20",
+   "median_ms": 0.708384,
+   "min_ms": 0.52112,
+   "max_ms": 0.811456
+  },
+  {
+   "kernel": "gemv_naive",
+   "dims": "896x896_x20",
+   "median_ms": 2.02602,
+   "min_ms": 1.99952,
+   "max_ms": 2.04925
+  },
+  {
+   "kernel": "rowpar_1024",
+   "dims": "896x896_x20",
+   "median_ms": 0.718128,
+   "min_ms": 0.659136,
+   "max_ms": 0.802304
+  },
+  {
+   "kernel": "rowpar_128",
+   "dims": "896x896_x20",
+   "median_ms": 0.350288,
+   "min_ms": 0.225056,
+   "max_ms": 0.48576
+  },
+  {
+   "kernel": "rowpar_256",
+   "dims": "896x896_x20",
+   "median_ms": 0.171952,
+   "min_ms": 0.135904,
+   "max_ms": 0.684608
+  },
+  {
+   "kernel": "rowpar_256c",
+   "dims": "896x896_x20",
+   "median_ms": 0.216848,
+   "min_ms": 0.150432,
+   "max_ms": 0.258304
+  },
+  {
+   "kernel": "rowpar_32",
+   "dims": "896x896_x20",
+   "median_ms": 0.480672,
+   "min_ms": 0.332672,
+   "max_ms": 0.605984
+  },
+  {
+   "kernel": "rowpar_512",
+   "dims": "896x896_x20",
+   "median_ms": 0.60408,
+   "min_ms": 0.469856,
+   "max_ms": 0.68608
+  },
+  {
+   "kernel": "rowpar_64",
+   "dims": "896x896_x20",
+   "median_ms": 0.489072,
+   "min_ms": 0.331424,
+   "max_ms": 0.667744
+  },
+  {
+   "kernel": "rowpar_64c",
+   "dims": "896x896_x20",
+   "median_ms": 0.473712,
+   "min_ms": 0.37968,
+   "max_ms": 0.669696
+  },
+  {
+   "kernel": "rowpar_auto",
+   "dims": "896x896_x20",
+   "median_ms": 0.509616,
+   "min_ms": 0.385824,
+   "max_ms": 0.647104
+  }
+ ]
+}
