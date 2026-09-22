@@ -76,7 +76,7 @@ std::vector<float> Session::prefill(const std::vector<int64_t>& ids) {
     rmsnorm(h.data() + (T - 1) * H, m_.final_norm, float(cfg.rms_norm_eps), 1, H,
             normed_last.data());
     std::vector<float> logits(cfg.vocab_size);
-    linear(normed_last.data(), m_.embed_tokens, nullptr, 1, H, cfg.vocab_size,
+    linear(normed_last.data(), m_.head(), nullptr, 1, H, cfg.vocab_size,
            logits.data());
     return logits;
 }
@@ -169,7 +169,7 @@ std::vector<float> Session::decode_one(int64_t id) {
 
     rmsnorm(h_.data(), m_.final_norm, float(cfg.rms_norm_eps), 1, H, normed_.data());
     std::vector<float> logits(cfg.vocab_size);
-    linear(normed_.data(), m_.embed_tokens, nullptr, 1, H, cfg.vocab_size, logits.data());
+    linear(normed_.data(), m_.head(), nullptr, 1, H, cfg.vocab_size, logits.data());
     return logits;
 }
 

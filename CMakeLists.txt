@@ -172,6 +172,11 @@ if(CMAKE_CUDA_COMPILER)
   target_link_libraries(main_server PRIVATE engine_gpu Threads::Threads)
   target_compile_definitions(main_server PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}" CPPHTTPLIB_NO_EXCEPTIONS=0)
 
+  # Stage 10: perplexity over the eval tokens (bf16 vs int8 vs int4).
+  add_executable(ppl tools/ppl.cpp)
+  target_link_libraries(ppl PRIVATE engine_gpu)
+  target_compile_definitions(ppl PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+
   # KV cache test gains its GPU half in CUDA builds.
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)

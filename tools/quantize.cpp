@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
     };
 
     put_mat("model.embed_tokens.weight", m.embed_tokens);
+    if (m.lm_head) put_mat("lm_head.weight", m.lm_head);
     put_vec("model.norm.weight", m.final_norm);
     for (size_t i = 0; i < m.layers.size(); i++) {
         const std::string p = "model.layers." + std::to_string(i) + ".";

@@ -102,7 +102,8 @@ struct QLayer {
 };
 struct QuantModel {
     ModelConfig cfg;
-    QTensor embed_tokens;         // quantised [vocab x hidden]; tied LM head
+    QTensor embed_tokens;         // quantised [vocab x hidden]; the LM head when tied
+    QTensor lm_head;              // quantised, rows == 0 when tied
     QTensor final_norm;
     std::vector<QLayer> layers;
     QKind kind = QKind::kInt8;

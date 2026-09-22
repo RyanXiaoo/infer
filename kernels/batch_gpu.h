@@ -51,6 +51,9 @@ public:
     int blocks_in_use() const override;
     int blocks_total() const override;
 
+    // Teacher-forced scoring (perplexity): runs `ids` as one sequence in `slot`
+    // and returns -log p(ids[i+1] | ids[..i]) for i in [0, n-1). Resets the slot.
+    std::vector<float> score(int slot, const std::vector<int64_t>& ids);
     int64_t position(int slot) const;       // tokens in the slot's cache
     int64_t bytes_per_block() const;        // K + V, all layers
     int64_t last_prefill_reused() const;    // positions served by the prefix cache

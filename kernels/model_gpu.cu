@@ -22,6 +22,7 @@ namespace llm {
 GpuModel::GpuModel(const Model& m) : impl_(new Impl) {
     impl_->cfg = m.cfg;
     impl_->embed_tokens.upload(m.embed_tokens);
+    if (m.lm_head) { impl_->lm_head.upload(m.lm_head); impl_->untied = true; }
     impl_->final_norm.upload(m.final_norm);
     impl_->layers.resize(m.layers.size());
     for (size_t i = 0; i < m.layers.size(); i++) {
@@ -54,6 +55,7 @@ GpuModel::GpuModel(const Model& m) : impl_(new Impl) {
 GpuModel::GpuModel(const QuantModel& m) : impl_(new Impl) {
     impl_->cfg = m.cfg;
     impl_->embed_tokens.upload_q(m.embed_tokens);
+    if (m.lm_head.rows) { impl_->lm_head.upload_q(m.lm_head); impl_->untied = true; }
     impl_->final_norm.upload_bf16_bits(m.final_norm.bf16, m.final_norm.rows);
     impl_->layers.resize(m.layers.size());
     for (size_t i = 0; i < m.layers.size(); i++) {
@@ -198,7 +200,7 @@ std::vector<float> forward_gpu(GpuModel& gm, const std::vector<int64_t>& ids,
     const int64_t t0 = last_only ? T - 1 : 0;
     const int64_t rows = T - t0;
     DevBuf d_logits(size_t(rows) * V * 4);
-    M.linear(gemm, normed.f() + t0 * H, M.embed_tokens, nullptr, rows, H, V,
+    M.linear(gemm, normed.f() + t0 * H, M.head(), nullptr, rows, H, V,
              d_logits.f());
 
     std::vector<float> logits(size_t(rows) * V);

@@ -146,6 +146,9 @@ inline void rope_tables_host(double theta, int64_t hd, int64_t pos0, int64_t T,
 struct GpuModel::Impl {
     ModelConfig cfg;
     DevTensor embed_tokens, final_norm;
+    DevTensor lm_head;                       // untied models only
+    bool untied = false;
+    DevTensor& head() { return untied ? lm_head : embed_tokens; }
     std::vector<DevLayer> layers;
     cublasHandle_t cublas = nullptr;
 

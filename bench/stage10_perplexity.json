@@ -1,0 +1,17 @@
+{
+ "what": "Stage 10 perplexity, 8191 tokens of Alice in Wonderland (tests/golden/eval_text.txt), teacher-forced in 512-token windows, exp(mean nll); tools/ppl",
+ "quantisation": "group 128 along the input dim, bf16 scales; int8 symmetric round-to-nearest; int4 asymmetric with zero point, round-to-nearest, no calibration",
+ "results": {
+  "Qwen2.5-0.5B-Instruct": {
+   "bf16": 16.83,
+   "int8": 16.8717,
+   "int4": 22.2142
+  },
+  "Qwen2.5-1.5B-Instruct": {
+   "bf16": 8.3389,
+   "int8": 8.345,
+   "int4": 11.2545
+  }
+ },
+ "reading": "int8 is lossless to three digits; int4 round-to-nearest at group 128 costs +32-35% perplexity, the known gap that GPTQ/AWQ-style calibration or smaller groups close (out of scope)."
+}

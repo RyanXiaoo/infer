@@ -2,12 +2,17 @@
 
 #include "model.h"
 
+#include <fstream>
+#include <set>
 #include <stdexcept>
+
+#include "../third_party/nlohmann/json.hpp"
 
 namespace llm {
 
 const Tensor* Model::get(const std::string& name) {
-    return &file_.get(name);   // SafetensorsFile::get throws with the name if absent
+    for (auto& f : files_) if (f->has(name)) return &f->get(name);
+    throw std::runtime_error("tensor not found in any shard: " + name);
 }
 
 const Tensor* Model::get(const std::string& name, int64_t rows, int64_t cols) {
@@ -25,7 +30,22 @@ const Tensor* Model::get(const std::string& name, int64_t rows, int64_t cols) {
 
 void Model::load(const std::string& model_dir) {
     cfg = ModelConfig::from_file(model_dir + "/config.json");
-    file_.open(model_dir + "/model.safetensors");
+    // Sharded checkpoint: the index lists which file holds each tensor; open
+    // every distinct shard. Otherwise the single model.safetensors.
+    files_.clear();
+    std::ifstream idx(model_dir + "/model.safetensors.index.json");
+    if (idx) {
+        const auto j = nlohmann::json::parse(idx);
+        std::set<std::string> shards;
+        for (auto& [k, v] : j.at("weight_map").items()) shards.insert(v.get<std::string>());
+        for (const std::string& s : shards) {
+            files_.push_back(std::make_unique<SafetensorsFile>());
+            files_.back()->open(model_dir + "/" + s);
+        }
+    } else {
+        files_.push_back(std::make_unique<SafetensorsFile>());
+        files_.back()->open(model_dir + "/model.safetensors");
+    }
 
     const int64_t h = cfg.hidden_size;
     const int64_t q_out = cfg.num_attention_heads * cfg.head_dim;
@@ -33,11 +53,8 @@ void Model::load(const std::string& model_dir) {
 
     embed_tokens = get("model.embed_tokens.weight", cfg.vocab_size, h);
     final_norm = get("model.norm.weight", h, -1);
-    if (!cfg.tie_word_embeddings) {
-        // This engine reuses embed_tokens as the LM head; an untied model would
-        // silently produce wrong logits, so refuse it here rather than there.
-        throw std::runtime_error("untied lm_head not supported (tie_word_embeddings=false)");
-    }
+    // Tied: the embedding table is the LM head. Untied (7B): its own matrix.
+    lm_head = cfg.tie_word_embeddings ? nullptr : get("lm_head.weight", cfg.vocab_size, h);
 
     layers.resize(cfg.num_hidden_layers);
     for (int64_t i = 0; i < cfg.num_hidden_layers; i++) {

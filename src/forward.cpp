@@ -251,7 +251,7 @@ std::vector<float> forward(const Model& m, const std::vector<int64_t>& ids,
     const int64_t t0 = last_only ? T - 1 : 0;
     const int64_t rows = T - t0;
     std::vector<float> logits(rows * cfg.vocab_size);
-    linear(normed.data() + t0 * H, m.embed_tokens, nullptr, rows, H,
+    linear(normed.data() + t0 * H, m.head(), nullptr, rows, H,
            cfg.vocab_size, logits.data());
     if (!last_only) tap(taps, "logits", logits, {1, T, cfg.vocab_size});
     return logits;

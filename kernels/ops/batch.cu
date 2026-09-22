@@ -396,6 +396,32 @@ __global__ void sample_rows_kernel(const float* logits, int64_t V, const float* 
     if (threadIdx.x == 0) out[b] = si[0];
 }
 
+// -log softmax(logits[b])[target[b]] per row: block max, block sum of exp,
+// one thread reads the target. For perplexity (tools/ppl.cpp).
+__global__ void nll_rows_kernel(const float* logits, int64_t V, const int64_t* target, float* out) {
+    extern __shared__ float red[];
+    const float* row = logits + int64_t(blockIdx.x) * V;
+    float m = -INFINITY;
+    for (int64_t v = threadIdx.x; v < V; v += blockDim.x) m = fmaxf(m, row[v]);
+    red[threadIdx.x] = m;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + s]);
+        __syncthreads();
+    }
+    const float M = red[0];
+    __syncthreads();
+    float sum = 0.0f;
+    for (int64_t v = threadIdx.x; v < V; v += blockDim.x) sum += expf(row[v] - M);
+    red[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[blockIdx.x] = logf(red[0]) + M - row[target[blockIdx.x]];
+}
+
 // argmax over each row of logits// argmax over each row of logits [B x V]: one block per row, strided scan +
 // block reduce on (value, index); ties -> lowest index, matching the CPU loop.
 __global__ void argmax_rows_kernel(const float* logits, int64_t V, int64_t* out) {
@@ -504,6 +530,10 @@ void launch_sample_rows(const float* logits, int B, int64_t V, const float* temp
     const int threads = 256;
     sample_rows_kernel<<<B, threads, threads * (sizeof(float) + sizeof(int64_t))>>>(
         logits, V, temperature, seed, step, out);
+}
+
+void launch_nll_rows(const float* logits, int B, int64_t V, const int64_t* target, float* out) {
+    nll_rows_kernel<<<B, 256, 256 * sizeof(float)>>>(logits, V, target, out);
 }
 
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out) {

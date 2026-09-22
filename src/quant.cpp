@@ -213,6 +213,7 @@ void QuantModel::load(const std::string& dir, QKind k) {
     const int64_t H = cfg.hidden_size, q_out = cfg.num_attention_heads * cfg.head_dim,
                   kv_out = cfg.num_key_value_heads * cfg.head_dim, I = cfg.intermediate_size;
     embed_tokens = mat("model.embed_tokens.weight", cfg.vocab_size, H);
+    if (!cfg.tie_word_embeddings) lm_head = mat("lm_head.weight", cfg.vocab_size, H);
     final_norm = vec("model.norm.weight", H);
     layers.resize(size_t(cfg.num_hidden_layers));
     for (int64_t i = 0; i < cfg.num_hidden_layers; i++) {

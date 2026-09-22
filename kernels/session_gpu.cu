@@ -81,7 +81,7 @@ struct GpuSession::Impl {
     // Final-norm output (normed_) -> tied LM head -> logits on the host.
     std::vector<float> lm_head_to_host() {
         const int64_t V = M.cfg.vocab_size, H = M.cfg.hidden_size;
-        M.linear(gemm, normed_.f(), M.embed_tokens, nullptr, 1, H, V, d_logits_.f());
+        M.linear(gemm, normed_.f(), M.head(), nullptr, 1, H, V, d_logits_.f());
         CUDA_CHECK(cudaMemcpy(h_logits_, d_logits_.p, size_t(V) * 4, cudaMemcpyDeviceToHost));
         return std::vector<float>(h_logits_, h_logits_ + V);
     }

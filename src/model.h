@@ -13,6 +13,7 @@
 #include "loader.h"
 #include "model_config.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -45,12 +46,15 @@ public:
     void load(const std::string& model_dir);
 
     ModelConfig cfg;
-    const Tensor* embed_tokens = nullptr;   // [vocab, hidden]; also the tied LM head
+    const Tensor* embed_tokens = nullptr;   // [vocab, hidden]; the LM head too when tied
+    const Tensor* lm_head = nullptr;        // [vocab, hidden] when untied (7B), else nullptr
     const Tensor* final_norm = nullptr;     // model.norm.weight
+    const Tensor* head() const { return lm_head ? lm_head : embed_tokens; }
     std::vector<LayerWeights> layers;
 
 private:
-    SafetensorsFile file_;   // owns the mmap; views above live as long as this
+    // One file, or every shard listed in model.safetensors.index.json (7B+).
+    std::vector<std::unique_ptr<SafetensorsFile>> files_;
     const Tensor* get(const std::string& name);
     const Tensor* get(const std::string& name, int64_t rows, int64_t cols);  // shape-checked
 };

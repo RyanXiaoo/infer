@@ -213,7 +213,7 @@ struct GpuBatch::Impl {
         }
         if (S.all_logits) {
             gpu::launch_rmsnorm(S.h.f(), M.final_norm.bf(), eps, B, H, S.normed.f());
-            linear_b(S.normed.f(), M.embed_tokens, nullptr, B, H, V, S.logits.f());
+            linear_b(S.normed.f(), M.head(), nullptr, B, H, V, S.logits.f());
             gpu::launch_sample_rows(S.logits.f(), B, V, S.d_temp.f(),
                                     static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
         } else {
@@ -224,7 +224,7 @@ struct GpuBatch::Impl {
             const int64_t last = B - 1, start = std::max<int64_t>(0, last - (kMaxRows - 1));
             gpu::launch_rmsnorm(S.h.f() + last * H, M.final_norm.bf(), eps, 1, H, S.normed.f() + last * H);
             const int Bw = int(last - start + 1);
-            linear_b(S.normed.f() + start * H, M.embed_tokens, nullptr, Bw, H, V, S.logits.f());
+            linear_b(S.normed.f() + start * H, M.head(), nullptr, Bw, H, V, S.logits.f());
             // Sampling params of the last row are staged in element 0.
             gpu::launch_sample_rows(S.logits.f() + (Bw - 1) * V, 1, V, S.d_temp.f(),
                                     static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
@@ -312,6 +312,36 @@ struct GpuBatch::Impl {
         return first;
     }
 
+    // Perplexity: rows [0, n-1) of the sequence through the decode scratch (all
+    // logits), 32 at a time; nll of each row's next token on the device.
+    std::vector<float> score(int slot, const std::vector<int64_t>& ids) {
+        const int64_t T = int64_t(ids.size());
+        if (T < 2 || T > max_seq) throw std::runtime_error("score: need 2..max_seq tokens");
+        BlockTable& t = tables[size_t(slot)];
+        if (!t.blocks.empty()) release_all(pool, t);
+        if (plan_prefill(pool, t, ids, /*use_prefix_cache=*/false) < 0) throw std::runtime_error("score: out of blocks");
+        table_dirty = true;
+        std::vector<float> nll(size_t(T - 1));
+        DevBuf d_targets(size_t(kMaxRows) * 8), d_nll(size_t(kMaxRows) * 4);
+        for (int64_t r0 = 0; r0 + 1 < T; r0 += kMaxRows) {
+            std::vector<Row> rows;
+            std::vector<int64_t> targets;
+            for (int64_t p = r0; p < std::min(T - 1, r0 + int64_t(kMaxRows)); p++) {
+                rows.push_back({slot, p, ids[size_t(p)], SampleParams{}});
+                targets.push_back(ids[size_t(p + 1)]);
+            }
+            int64_t dummy[kMaxRows];
+            forward_rows(dec, rows, dummy);   // leaves logits for all rows in dec.logits
+            const int B = int(rows.size());
+            CUDA_CHECK(cudaMemcpy(d_targets.p, targets.data(), size_t(B) * 8, cudaMemcpyHostToDevice));
+            gpu::launch_nll_rows(dec.logits.f(), B, V, d_targets.i64(), d_nll.f());
+            CUDA_CHECK(cudaMemcpy(nll.data() + r0, d_nll.p, size_t(B) * 4, cudaMemcpyDeviceToHost));
+        }
+        release_all(pool, t);
+        table_dirty = true;
+        return nll;
+    }
+
     std::vector<int64_t> step(const std::vector<StepRow>& srows) {
         const int B = int(srows.size());
         if (B == 0) return {};
@@ -366,6 +396,7 @@ std::vector<int64_t> GpuBatch::step(const std::vector<StepRow>& rows) { return i
 void GpuBatch::release(int slot) { impl_->release(slot); }
 int GpuBatch::blocks_in_use() const { return impl_->pool.n_in_use(); }
 int GpuBatch::blocks_total() const { return impl_->pool.n_blocks(); }
+std::vector<float> GpuBatch::score(int slot, const std::vector<int64_t>& ids) { return impl_->score(slot, ids); }
 int64_t GpuBatch::position(int slot) const { return impl_->tables.at(size_t(slot)).length; }
 int64_t GpuBatch::bytes_per_block() const { return Impl::block_bytes(impl_->M.cfg); }
 int64_t GpuBatch::last_prefill_reused() const { return impl_->last_reused; }
