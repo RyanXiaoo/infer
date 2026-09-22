@@ -35,8 +35,9 @@ struct SpecStats {
 
 class SpecEngine : public BatchEngine {
 public:
-    // target and draft must have the same slot count and tokenizer; k <= 8 and
-    // slots * (k + 1) <= 32 (one verify forward holds every slot's candidates).
+    // target and draft must have the same slot count and tokenizer; k <= 8.
+    // Verification runs all slots' candidates in as few target forwards as
+    // fit 32 rows each (k = 4 -> 6 slots per forward).
     SpecEngine(GpuBatch& target, GpuBatch& draft, int k);
 
     int slots() const override { return target_.slots(); }

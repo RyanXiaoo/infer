@@ -350,23 +350,32 @@ struct GpuBatch::Impl {
         t.length = len;
     }
 
-    std::vector<int64_t> verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample) {
-        BlockTable& t = tables[size_t(slot)];
-        const int n = int(tokens.size());
-        if (n < 1 || n > kMaxRows) throw std::runtime_error("verify: 1..32 tokens");
-        if (t.length + n > max_seq) throw std::runtime_error("verify: cache full");
+    std::vector<std::vector<int64_t>> verify(const std::vector<GpuBatch::VerifyGroup>& groups) {
         std::vector<Row> rows;
-        for (int i = 0; i < n; i++) {
-            if (tokens[size_t(i)] < 0 || tokens[size_t(i)] >= V) throw std::runtime_error("token id out of range");
-            rows.push_back({slot, t.length + i, tokens[size_t(i)], sample});
+        for (const auto& g : groups) {
+            const BlockTable& t = tables[size_t(g.slot)];
+            const int n = int(g.tokens.size());
+            if (n < 1) throw std::runtime_error("verify: empty group");
+            if (t.length + n > max_seq) throw std::runtime_error("verify: cache full");
+            for (int i = 0; i < n; i++) {
+                if (g.tokens[size_t(i)] < 0 || g.tokens[size_t(i)] >= V) throw std::runtime_error("token id out of range");
+                rows.push_back({g.slot, t.length + i, g.tokens[size_t(i)], g.sample});
+            }
         }
+        if (rows.size() > size_t(kMaxRows)) throw std::runtime_error("verify: more than 32 rows");
         std::vector<bool> failed;
         plan_rows(rows, failed);
         for (bool f : failed) if (f) throw std::runtime_error("verify: out of blocks");
         int64_t outs[kMaxRows];
         forward_rows(dec, rows, outs);
-        t.length += n;
-        return std::vector<int64_t>(outs, outs + n);
+        std::vector<std::vector<int64_t>> out;
+        size_t at = 0;
+        for (const auto& g : groups) {
+            out.emplace_back(outs + at, outs + at + g.tokens.size());
+            at += g.tokens.size();
+            tables[size_t(g.slot)].length += int64_t(g.tokens.size());
+        }
+        return out;
     }
 
     std::vector<int64_t> step(const std::vector<StepRow>& srows) {
@@ -425,8 +434,8 @@ int GpuBatch::blocks_in_use() const { return impl_->pool.n_in_use(); }
 int GpuBatch::blocks_total() const { return impl_->pool.n_blocks(); }
 std::vector<float> GpuBatch::score(int slot, const std::vector<int64_t>& ids) { return impl_->score(slot, ids); }
 void GpuBatch::truncate(int slot, int64_t len) { impl_->truncate(slot, len); }
-std::vector<int64_t> GpuBatch::verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample) {
-    return impl_->verify(slot, tokens, sample);
+std::vector<std::vector<int64_t>> GpuBatch::verify(const std::vector<VerifyGroup>& groups) {
+    return impl_->verify(groups);
 }
 void GpuBatch::set_vocab_limit(int64_t limit) { impl_->V_eff = std::min(limit, impl_->V); }
 int64_t GpuBatch::position(int slot) const { return impl_->tables.at(size_t(slot)).length; }

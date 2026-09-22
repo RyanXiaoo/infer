@@ -11,8 +11,6 @@ SpecEngine::SpecEngine(GpuBatch& target, GpuBatch& draft, int k)
     : target_(target), draft_(draft), k_(k), draft_owes_(size_t(target.slots()), -1) {
     if (target.slots() != draft.slots()) throw std::runtime_error("SpecEngine: slot counts differ");
     if (k < 1 || k > 8) throw std::runtime_error("SpecEngine: k must be 1..8");
-    if (target.slots() * (k + 1) > GpuBatch::kMaxRows)
-        throw std::runtime_error("SpecEngine: slots * (k + 1) must be <= 32");
     if (target.max_seq() > draft.max_seq()) throw std::runtime_error("SpecEngine: draft max_seq too small");
 }
 
@@ -85,14 +83,26 @@ std::vector<std::vector<int64_t>> SpecEngine::step_multi(const std::vector<StepR
     }
     // The draft's cache now holds k positions past len0 (last, d_1 .. d_{k-1}).
 
-    // 2. Target verifies [last, d_1 .. d_k] in one forward per slot.
-    //    (One verify per slot; rows of different slots could share a forward,
-    //    a follow-up.)
+    // 2. Target verifies [last, d_1 .. d_k] for every slot, packing as many
+    //    slots as fit one 32-row forward.
+    std::vector<std::vector<int64_t>> targ(spec_idx.size());
+    {
+        const size_t per = size_t(GpuBatch::kMaxRows / (k_ + 1));
+        for (size_t j0 = 0; j0 < spec_idx.size(); j0 += per) {
+            std::vector<GpuBatch::VerifyGroup> groups;
+            for (size_t j = j0; j < std::min(spec_idx.size(), j0 + per); j++) {
+                const StepRow& r = rows[spec_idx[j]];
+                std::vector<int64_t> cand{r.token};
+                cand.insert(cand.end(), drafts[j].begin(), drafts[j].end());
+                groups.push_back({r.slot, cand, r.sample});
+            }
+            std::vector<std::vector<int64_t>> t = target_.verify(groups);
+            for (size_t j = j0; j < j0 + t.size(); j++) targ[j] = t[j - j0];
+        }
+    }
     for (size_t j = 0; j < spec_idx.size(); j++) {
         const StepRow& r = rows[spec_idx[j]];
-        std::vector<int64_t> cand{r.token};
-        cand.insert(cand.end(), drafts[j].begin(), drafts[j].end());
-        std::vector<int64_t> t = target_.verify(r.slot, cand, r.sample);   // t[i] = argmax after cand[i]
+        const std::vector<int64_t>& t = targ[j];   // t[i] = argmax after cand[i]
 
         // 3. Accept the longest prefix where the draft matched the target.
         int a = 0;

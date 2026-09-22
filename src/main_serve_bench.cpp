@@ -28,6 +28,7 @@
 
 #include "../kernels/batch_gpu.h"
 #include "../kernels/model_gpu.h"
+#include "../kernels/spec_engine.h"
 #include "model.h"
 #include "model_select.h"
 #include "npy.h"
@@ -65,7 +66,7 @@ double percentile(std::vector<double> v, double p) {
 struct Row {
     int slots; bool continuous; double wall_ms, tok_s, step_ms, token_lat_ms,
     req_p50, req_p95, ttft_p50; int64_t steps, tokens; int blocks_total, blocks_peak, preemptions;
-    int64_t prefix_reused;
+    double acceptance;   // speculative rounds: accepted / drafted (0 when not speculating)
 };
 
 } // namespace
@@ -93,6 +94,9 @@ int main(int argc, char** argv) {
     const bool graphs = get("graphs", "0") == "1";
     const bool attn_split = get("attn", "split") != "par";
     const llm::GemmPath gemm = llm::gemm_path_from(gemm_s);
+    // Stage 11: LLM_DRAFT=<model> plus spec_k=N wrap the engine in speculative decoding.
+    const int spec_k = std::atoi(get("spec_k", "4").c_str());
+    const std::string draft = llm::draft_name();
 
     // Stage 10: LLM_QUANT=int8|int4 loads model.q8/q4.llmq instead of the bf16 weights.
     llm::Model model;
@@ -103,6 +107,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<llm::GpuModel> gpu_p = quant.empty() ? std::make_unique<llm::GpuModel>(model)
                                                          : std::make_unique<llm::GpuModel>(qmodel);
     llm::GpuModel& gpu = *gpu_p;
+    llm::Model dmodel;
+    llm::QuantModel dqmodel;
+    std::unique_ptr<llm::GpuModel> dgpu;
+    const std::string dquant = llm::draft_quant_name();
+    if (!draft.empty() && dquant.empty()) { dmodel.load(root + "/models/" + draft); dgpu = std::make_unique<llm::GpuModel>(dmodel); }
+    if (!draft.empty() && !dquant.empty()) {
+        dqmodel.load(root + "/models/" + draft, dquant == "int4" ? llm::QKind::kInt4 : llm::QKind::kInt8);
+        dgpu = std::make_unique<llm::GpuModel>(dqmodel);
+    }
     const std::string golden = llm::golden_dir(root);
     std::vector<std::vector<int64_t>> prompts;
     for (int pi = 0; pi < 5; pi++) {
@@ -128,11 +141,11 @@ int main(int argc, char** argv) {
         requests.push_back(r);
     }
     std::printf("model %s gemm=%s: %d requests, %lld tokens to generate, max_seq %lld, "
-                "budget %s, prefix %d (cache %s), graphs %s, attn %s\n",
+                "budget %s, prefix %d (cache %s), graphs %s, attn %s, draft %s k=%d\n",
                 llm::model_name().c_str(), gemm_s.c_str(), n_requests, (long long)total_tokens,
                 (long long)max_seq, budget ? (std::to_string(budget >> 20) + " MB").c_str() : "reserve",
                 prefix_len, prefix_cache ? "on" : "off", graphs ? "on" : "off",
-                attn_split ? "split" : "par");
+                attn_split ? "split" : "par", draft.empty() ? "none" : draft.c_str(), spec_k);
     std::printf("%5s %10s %9s %8s %10s %9s %9s %8s %6s %7s %7s %7s\n", "slots", "mode", "tok/s",
                 "step ms", "tok lat ms", "req p50", "req p95", "ttft p50", "steps", "blocks",
                 "peak", "preempt");
@@ -143,12 +156,21 @@ int main(int argc, char** argv) {
             if (modes == "continuous" && !continuous) continue;
             if (modes == "static" && continuous) continue;
             llm::GpuBatch batch(gpu, slots, max_seq, gemm, budget, prefix_cache, graphs, attn_split);
+            std::unique_ptr<llm::GpuBatch> dbatch;
+            std::unique_ptr<llm::SpecEngine> spec;
+            if (dgpu) {
+                dbatch = std::make_unique<llm::GpuBatch>(*dgpu, slots, max_seq, gemm, 0, prefix_cache, graphs, attn_split);
+                const int64_t v = std::min(gpu.cfg().vocab_size, dgpu->cfg().vocab_size);
+                batch.set_vocab_limit(v); dbatch->set_vocab_limit(v);
+                spec = std::make_unique<llm::SpecEngine>(batch, *dbatch, spec_k);
+            }
+            llm::BatchEngine& eng = spec ? static_cast<llm::BatchEngine&>(*spec) : batch;
             // Warm-up: one short request so first-launch costs stay out of the timing.
-            { llm::Request w = requests[0]; w.max_new = 4; llm::SchedulerConfig c; llm::Scheduler s(batch, c); s.submit(w); s.run_until_idle(); }
+            { llm::Request w = requests[0]; w.max_new = 4; llm::SchedulerConfig c; llm::Scheduler s(eng, c); s.submit(w); s.run_until_idle(); }
             llm::SchedulerConfig cfg;
             cfg.continuous = continuous;
             cfg.eos_id = -1;
-            llm::Scheduler sch(batch, cfg);
+            llm::Scheduler sch(eng, cfg);
             for (const auto& r : requests) sch.submit(r);
             const auto t0 = std::chrono::steady_clock::now();
             sch.run_until_idle();
@@ -170,12 +192,15 @@ int main(int argc, char** argv) {
                 peak = std::max(peak, sch.events().at(i).pool_in_use);
             Row row{slots, continuous, wall_ms, tokens / (wall_ms / 1e3), wall_ms / double(sch.steps()),
                     tl, percentile(req_lat, 0.5), percentile(req_lat, 0.95), percentile(ttft, 0.5),
-                    sch.steps(), tokens, batch.blocks_total(), peak, sch.preemptions(), 0};
+                    sch.steps(), tokens, batch.blocks_total(), peak, sch.preemptions(),
+                    spec ? spec->stats().acceptance() : 0.0};
             rows.push_back(row);
-            std::printf("%5d %10s %9.1f %8.2f %10.2f %9.0f %9.0f %8.0f %6lld %7d %7d %7d\n", slots,
+            std::printf("%5d %10s %9.1f %8.2f %10.2f %9.0f %9.0f %8.0f %6lld %7d %7d %7d", slots,
                         continuous ? "continuous" : "static", row.tok_s, row.step_ms, row.token_lat_ms,
                         row.req_p50, row.req_p95, row.ttft_p50, (long long)row.steps, row.blocks_total,
                         row.blocks_peak, row.preemptions);
+            if (spec) std::printf("  accept %.0f%% %.2f tok/round", 100 * row.acceptance, spec->stats().tokens_per_round());
+            std::printf("\n");
             if (slots == slot_list.back() && (continuous || modes == "static"))
                 sch.events().write_jsonl(!events_path.empty() ? events_path
                     : root + "/bench/events_" + llm::model_name() + "_" + gemm_s + "_slots" +
@@ -196,6 +221,7 @@ int main(int argc, char** argv) {
       << ", \"budget_mb\": " << (budget >> 20) << ", \"bytes_per_block\": " << llm::GpuBatch(gpu, 1, 16, gemm).bytes_per_block()
       << ", \"prefix\": " << prefix_len << ", \"prefix_cache\": " << (prefix_cache ? "true" : "false")
       << ", \"graphs\": " << (graphs ? "true" : "false") << ", \"attn\": \"" << (attn_split ? "split" : "par") << "\",\n"
+      << " \"draft\": \"" << draft << "\", \"draft_quant\": \"" << dquant << "\", \"spec_k\": " << (draft.empty() ? 0 : spec_k) << ",\n"
       << " \"prompts\": \"golden prompts 0-4 cycled, all submitted at t=0, eos disabled\",\n \"rows\": [\n";
     for (size_t i = 0; i < rows.size(); i++) {
         const Row& r = rows[i];
@@ -205,7 +231,7 @@ int main(int argc, char** argv) {
           << ", \"request_p95_ms\": " << r.req_p95 << ", \"ttft_p50_ms\": " << r.ttft_p50
           << ", \"steps\": " << r.steps << ", \"blocks_total\": " << r.blocks_total
           << ", \"blocks_peak\": " << r.blocks_peak << ", \"preemptions\": " << r.preemptions
-          << "}" << (i + 1 < rows.size() ? ",\n" : "\n");
+          << ", \"acceptance\": " << r.acceptance << "}" << (i + 1 < rows.size() ? ",\n" : "\n");
     }
     f << " ]\n}\n";
     std::printf("wrote %s\n", path.c_str());

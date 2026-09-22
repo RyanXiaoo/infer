@@ -54,11 +54,15 @@ public:
     // Speculative decoding support (Stage 11).
     // Roll a slot back to `len` positions (drop rejected draft rows).
     void truncate(int slot, int64_t len);
-    // Run the k+1 candidate rows `tokens` at positions [len, len+k] of `slot`
-    // in one forward; returns the argmax (or sample, per `sample`) after each
-    // row. The slot's length becomes len + k + 1; the caller truncates to the
-    // accepted length.
-    std::vector<int64_t> verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample = {});
+    // Run each group's k+1 candidate rows at positions [len, len+k] of its
+    // slot, all groups in ONE forward (total rows <= kMaxRows); returns per
+    // group the argmax (or sample, per `sample`) after each row. Each slot's
+    // length becomes len + k + 1; the caller truncates to the accepted length.
+    struct VerifyGroup { int slot; std::vector<int64_t> tokens; SampleParams sample; };
+    std::vector<std::vector<int64_t>> verify(const std::vector<VerifyGroup>& groups);
+    std::vector<int64_t> verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample = {}) {
+        return verify(std::vector<VerifyGroup>{{slot, tokens, sample}})[0];
+    }
     // argmax/sampling consider only ids < limit (draft/target vocab padding differs).
     void set_vocab_limit(int64_t limit);
     // Teacher-forced scoring (perplexity): runs `ids` as one sequence in `slot`

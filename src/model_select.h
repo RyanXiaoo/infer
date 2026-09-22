@@ -31,6 +31,17 @@ inline std::string quant_name() {
     const char* env = std::getenv("LLM_QUANT");
     return env && env[0] ? env : "";
 }
+// LLM_DRAFT=<model name> names a bf16 draft model for speculative decoding
+// (Stage 11); unset = no speculation.
+inline std::string draft_name() {
+    const char* env = std::getenv("LLM_DRAFT");
+    return env && env[0] ? env : "";
+}
+// LLM_DRAFT_QUANT=int8|int4 quantised draft weights; unset = bf16 draft.
+inline std::string draft_quant_name() {
+    const char* env = std::getenv("LLM_DRAFT_QUANT");
+    return env && env[0] ? env : "";
+}
 inline std::string golden_dir(const std::string& root) {
     const std::string name = model_name();
     return name == kDefaultModel ? root + "/tests/golden" : root + "/tests/golden/" + name;

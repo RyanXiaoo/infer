@@ -20,9 +20,11 @@
 //
 // Usage: main_server [--port 8080] [--slots 16] [--max-seq 2048] [--kv-budget-mb 0]
 //                    [--gemm mine|cublas] [--graphs 0|1] [--model <name>]
+//                    [--draft <name>] [--spec-k 4]     (Stage 11: speculative decoding)
 
 #include "../kernels/batch_gpu.h"
 #include "../kernels/model_gpu.h"
+#include "../kernels/spec_engine.h"
 #include "model.h"
 #include "model_select.h"
 #include "serve.h"
@@ -31,6 +33,7 @@
 #include "../third_party/httplib/httplib.h"
 #include "../third_party/nlohmann/json.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -80,6 +83,7 @@ int main(int argc, char** argv) {
     int64_t max_seq = 2048, budget_mb = 0;
     std::string gemm = "mine";
     bool graphs = true;
+    int spec_k = 4;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--port") port = std::atoi(v.c_str());
@@ -89,6 +93,8 @@ int main(int argc, char** argv) {
         else if (k == "--gemm") gemm = v;
         else if (k == "--graphs") graphs = v != "0";
         else if (k == "--model") setenv("LLM_MODEL", v.c_str(), 1);
+        else if (k == "--draft") setenv("LLM_DRAFT", v.c_str(), 1);
+        else if (k == "--spec-k") spec_k = std::atoi(v.c_str());
         else { std::fprintf(stderr, "unknown flag %s\n", k.c_str()); return 2; }
     }
     const std::string root = MODEL_ROOT;
@@ -104,11 +110,32 @@ int main(int argc, char** argv) {
                                                          : std::make_unique<llm::GpuModel>(qmodel);
     llm::GpuModel& gpu = *gpu_p;
     llm::GpuBatch engine(gpu, slots, max_seq, llm::gemm_path_from(gemm), budget_mb << 20, true, graphs);
+    // Stage 11: --draft <model> (or LLM_DRAFT) wraps the engine in speculative decoding.
+    llm::Model dmodel;
+    llm::QuantModel dqmodel;
+    std::unique_ptr<llm::GpuModel> dgpu;
+    std::unique_ptr<llm::GpuBatch> dbatch;
+    std::unique_ptr<llm::SpecEngine> spec;
+    const std::string draft = llm::draft_name();
+    if (!draft.empty()) {
+        const std::string dquant = llm::draft_quant_name();
+        if (dquant.empty()) { dmodel.load(root + "/models/" + draft); dgpu = std::make_unique<llm::GpuModel>(dmodel); }
+        else {
+            dqmodel.load(root + "/models/" + draft, dquant == "int4" ? llm::QKind::kInt4 : llm::QKind::kInt8);
+            dgpu = std::make_unique<llm::GpuModel>(dqmodel);
+        }
+        dbatch = std::make_unique<llm::GpuBatch>(*dgpu, slots, max_seq, llm::gemm_path_from(gemm), 0, true, graphs);
+        const int64_t v = std::min(gpu.cfg().vocab_size, dgpu->cfg().vocab_size);
+        engine.set_vocab_limit(v); dbatch->set_vocab_limit(v);
+        spec = std::make_unique<llm::SpecEngine>(engine, *dbatch, spec_k);
+    }
+    llm::BatchEngine& eng = spec ? static_cast<llm::BatchEngine&>(*spec) : engine;
     llm::SchedulerConfig cfg;
     cfg.eos_id = tok.eos_id();
-    llm::Server core(engine, cfg);
-    std::fprintf(stderr, "model %s, %d slots, max_seq %lld, %d KV blocks, port %d\n",
-                 llm::model_name().c_str(), slots, (long long)max_seq, engine.blocks_total(), port);
+    llm::Server core(eng, cfg);
+    std::fprintf(stderr, "model %s, %d slots, max_seq %lld, %d KV blocks, port %d, draft %s k=%d\n",
+                 llm::model_name().c_str(), slots, (long long)max_seq, engine.blocks_total(), port,
+                 draft.empty() ? "none" : draft.c_str(), spec_k);
 
     httplib::Server http;
     g_server = &http;
