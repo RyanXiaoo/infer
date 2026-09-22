@@ -102,6 +102,18 @@ __global__ void gemv_batched_v1_kernel(const float* x, const __nv_bfloat16* W,
     }
 }
 
+// Paged KV addressing (Stage 7). The cache is a pool of blocks of kBlockRows
+// positions ([n_blocks x kBlockRows x kv_dim] per layer); sequence `slot`'s
+// positions live in the blocks listed in its row of the table
+// ([n_slots x max_blocks]). Row s of slot: block = table[slot][s / 16],
+// pool row = block * 16 + s % 16. A contiguous cache is the special case of an
+// identity table, so there is one code path.
+constexpr int kBlockRows = 16;
+
+__device__ inline int64_t pool_row(const int* table, int max_blocks, int slot, int64_t s) {
+    return int64_t(table[slot * max_blocks + int(s / kBlockRows)]) * kBlockRows + s % kBlockRows;
+}
+
 // Per row b: rotate q[b] in place at position pos[b], rotate k[b] into slot
 // slot[b]'s cache row pos[b], copy v[b] there. cos/sin tables are [max_seq x hd].
 // One thread per (row, rotation pair), q heads then k heads as in the T=1 kernel.
@@ -109,8 +121,8 @@ __global__ void rope_qk_append_batched_kernel(float* q, const float* k, const fl
                                               const float* cos_tab, const float* sin_tab,
                                               const int* slot, const int* pos, int B,
                                               int64_t n_heads, int64_t n_kv, int64_t hd,
-                                              int64_t max_seq, float* k_cache,
-                                              float* v_cache) {
+                                              const int* table, int max_blocks,
+                                              float* k_cache, float* v_cache) {
     const int64_t half = hd / 2, per_row = (n_heads + n_kv) * half;
     int64_t idx = blockIdx.x * int64_t(blockDim.x) + threadIdx.x;
     if (idx >= B * per_row) return;
@@ -129,7 +141,7 @@ __global__ void rope_qk_append_batched_kernel(float* q, const float* k, const fl
     const int64_t off = (h - n_heads) * hd;
     const float* kr = k + b * kv_dim;
     const float* vr = v + b * kv_dim;
-    const int64_t row = (int64_t(slot[b]) * max_seq + pos[b]) * kv_dim;
+    const int64_t row = pool_row(table, max_blocks, slot[b], pos[b]) * kv_dim;
     float x1 = kr[off + j], x2 = kr[off + half + j];
     k_cache[row + off + j] = x1 * c[j] - x2 * s[j];
     k_cache[row + off + half + j] = x2 * c[half + j] + x1 * s[half + j];
@@ -137,33 +149,38 @@ __global__ void rope_qk_append_batched_kernel(float* q, const float* k, const fl
     v_cache[row + off + half + j] = vr[off + half + j];
 }
 
-__device__ inline const float* kv_row_slot(const float* cache, int slot, int64_t s,
-                                           int64_t g, int64_t max_seq, int64_t kv_dim,
-                                           int64_t hd) {
-    return cache + (int64_t(slot) * max_seq + s) * kv_dim + g * hd;
-}
+struct KvView {   // one sequence's K or V rows, addressed through its block-table row
+    const float* pool;
+    const int* row_table;   // this slot's row of the table
+    int64_t kv_dim, hd;
+    __device__ inline const float* row(int64_t s, int64_t g) const {
+        return pool + (int64_t(row_table[s / kBlockRows]) * kBlockRows + s % kBlockRows) * kv_dim + g * hd;
+    }
+};
 
 // Same three-phase kernel as attention_cached_par_kernel; block (b, h) reads
-// slot[b]'s cache over cache_len = pos[b] + 1 rows. scores: [B x n_heads x max_seq].
+// slot[b]'s rows over cache_len = pos[b] + 1. scores: [B x n_heads x scores_stride].
 __global__ void attention_cached_batched_kernel(const float* q, const float* k_cache,
                                                 const float* v_cache, float* scores,
                                                 const int* slot, const int* pos,
                                                 int64_t n_heads, int64_t n_kv, int64_t hd,
-                                                int64_t max_seq, int classes, float* ctx) {
+                                                const int* table, int max_blocks,
+                                                int64_t scores_stride, int classes, float* ctx) {
     extern __shared__ float part[];
     const int Bt = blockDim.x, i = threadIdx.x;
     const int b = blockIdx.y;
     const int64_t h = blockIdx.x;
     const int64_t g = h / (n_heads / n_kv), kv_dim = n_kv * hd;
     const int64_t cache_len = pos[b] + 1;
-    const int sl = slot[b];
+    const KvView K{k_cache, table + slot[b] * max_blocks, kv_dim, hd};
+    const KvView V{v_cache, table + slot[b] * max_blocks, kv_dim, hd};
     const float scale = rsqrtf(float(hd));
     const float* qr = q + b * n_heads * hd + h * hd;
-    float* sc = scores + (int64_t(b) * n_heads + h) * max_seq;
+    float* sc = scores + (int64_t(b) * n_heads + h) * scores_stride;
 
     float m = -INFINITY;
     for (int64_t s = i; s < cache_len; s += Bt) {
-        const float* kr = kv_row_slot(k_cache, sl, s, g, max_seq, kv_dim, hd);
+        const float* kr = K.row(s, g);
         float acc = 0.0f;
         for (int64_t d = 0; d < hd; d++) acc += qr[d] * kr[d];
         sc[s] = acc * scale;
@@ -193,8 +210,7 @@ __global__ void attention_cached_batched_kernel(const float* q, const float* k_c
     if (hd > Bt) {
         for (int64_t d = i; d < hd; d += Bt) {
             float acc = 0.0f;
-            for (int64_t s = 0; s < cache_len; s++)
-                acc += sc[s] * kv_row_slot(v_cache, sl, s, g, max_seq, kv_dim, hd)[d];
+            for (int64_t s = 0; s < cache_len; s++) acc += sc[s] * V.row(s, g)[d];
             out[d] = acc * inv_denom;
         }
         return;
@@ -202,8 +218,7 @@ __global__ void attention_cached_batched_kernel(const float* q, const float* k_c
     const int c = i / int(hd), d = i % int(hd);
     float acc = 0.0f;
     if (c < classes)
-        for (int64_t s = c; s < cache_len; s += classes)
-            acc += sc[s] * kv_row_slot(v_cache, sl, s, g, max_seq, kv_dim, hd)[d];
+        for (int64_t s = c; s < cache_len; s += classes) acc += sc[s] * V.row(s, g)[d];
     part[i] = acc;
     __syncthreads();
     for (int stride = classes / 2; stride > 0; stride >>= 1) {
@@ -211,6 +226,16 @@ __global__ void attention_cached_batched_kernel(const float* q, const float* k_c
         __syncthreads();
     }
     if (c == 0) out[d] = part[i] * inv_denom;
+}
+
+// Copy-on-write: block `src` -> block `dst` in one layer's K and V pools.
+__global__ void block_copy_kernel(const float* k_pool, const float* v_pool, int src, int dst,
+                                  int64_t kv_dim, float* k_out, float* v_out) {
+    const int64_t n = int64_t(kBlockRows) * kv_dim;
+    int64_t i = blockIdx.x * int64_t(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    k_out[int64_t(dst) * n + i] = k_pool[int64_t(src) * n + i];
+    v_out[int64_t(dst) * n + i] = v_pool[int64_t(src) * n + i];
 }
 
 // argmax over each row of logits [B x V]: one block per row, strided scan +
@@ -271,23 +296,32 @@ void launch_gemv_batched_v1(const float* x, const __nv_bfloat16* W, const __nv_b
 void launch_rope_qk_append_batched(float* q, const float* k, const float* v,
                                    const float* cos_tab, const float* sin_tab,
                                    const int* slot, const int* pos, int B, int64_t n_heads,
-                                   int64_t n_kv, int64_t hd, int64_t max_seq, float* k_cache,
-                                   float* v_cache) {
+                                   int64_t n_kv, int64_t hd, const int* table, int max_blocks,
+                                   float* k_cache, float* v_cache) {
     const int64_t n = int64_t(B) * (n_heads + n_kv) * (hd / 2);
     rope_qk_append_batched_kernel<<<(n + 255) / 256, 256>>>(
-        q, k, v, cos_tab, sin_tab, slot, pos, B, n_heads, n_kv, hd, max_seq, k_cache, v_cache);
+        q, k, v, cos_tab, sin_tab, slot, pos, B, n_heads, n_kv, hd, table, max_blocks, k_cache,
+        v_cache);
+}
+
+void launch_block_copy(const float* k_pool, const float* v_pool, int src, int dst,
+                       int64_t kv_dim, float* k_out, float* v_out) {
+    const int64_t n = int64_t(kBlockRows) * kv_dim;
+    block_copy_kernel<<<(n + 255) / 256, 256>>>(k_pool, v_pool, src, dst, kv_dim, k_out, v_out);
 }
 
 void launch_attention_cached_batched(const float* q, const float* k_cache,
                                      const float* v_cache, float* scores, const int* slot,
                                      const int* pos, int B, int64_t max_cache_len,
                                      int64_t n_heads, int64_t n_kv, int64_t hd,
-                                     int64_t max_seq, float* ctx, int threads) {
+                                     const int* table, int max_blocks, int64_t scores_stride,
+                                     float* ctx, int threads) {
     if (threads <= 0) threads = attention_par_threads(hd, max_cache_len);
     const int classes = hd > threads ? 1 : pow2_floor_b(threads / hd);
     const dim3 grid(unsigned(n_heads), unsigned(B), 1u);
     attention_cached_batched_kernel<<<grid, threads, threads * sizeof(float)>>>(
-        q, k_cache, v_cache, scores, slot, pos, n_heads, n_kv, hd, max_seq, classes, ctx);
+        q, k_cache, v_cache, scores, slot, pos, n_heads, n_kv, hd, table, max_blocks,
+        scores_stride, classes, ctx);
 }
 
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out) {

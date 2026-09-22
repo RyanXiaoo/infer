@@ -435,24 +435,46 @@ void test_gemv_batched(std::mt19937& rng, int B, int64_t in, int64_t out, bool b
     }
 }
 
+// A scattered block table for n_slots sequences over a pool of
+// n_slots * max_blocks blocks: every slot gets a random set of block ids, so
+// consecutive positions of one sequence live in unrelated pool rows.
+struct PagedFixture {
+    int max_blocks;
+    std::vector<int> table;   // [n_slots x max_blocks]
+    PagedFixture(std::mt19937& rng, int n_slots, int64_t max_seq)
+        : max_blocks(int((max_seq + 15) / 16)), table(size_t(n_slots) * max_blocks) {
+        std::vector<int> perm(table.size());
+        for (size_t i = 0; i < perm.size(); i++) perm[i] = int(i);
+        std::shuffle(perm.begin(), perm.end(), rng);
+        table = perm;
+    }
+    int64_t pool_row(int slot, int64_t s) const {
+        return int64_t(table[size_t(slot) * max_blocks + int(s / 16)]) * 16 + s % 16;
+    }
+    // The slot's first `len` rows gathered into contiguous order.
+    std::vector<float> gather(const std::vector<float>& pool, int slot, int64_t len,
+                              int64_t kv_dim) const {
+        std::vector<float> out(size_t(len) * kv_dim);
+        for (int64_t s = 0; s < len; s++)
+            std::copy_n(pool.begin() + pool_row(slot, s) * kv_dim, kv_dim, out.begin() + s * kv_dim);
+        return out;
+    }
+};
+
 void test_attention_batched(std::mt19937& rng, int n_slots, int B, int64_t n_heads,
                             int64_t n_kv, int64_t hd, int64_t max_seq) {
     const int64_t kv_dim = n_kv * hd;
-    // Random per-row slot (distinct) and position; caches filled with random data
-    // everywhere so an off-by-one in slot or length reads a wrong (finite) row.
+    PagedFixture fx(rng, n_slots, max_seq);
     std::vector<int> slot(B), pos(B);
     std::vector<int> perm(n_slots);
     for (int i = 0; i < n_slots; i++) perm[i] = i;
     std::shuffle(perm.begin(), perm.end(), rng);
-    for (int b = 0; b < B; b++) {
-        slot[b] = perm[b];
-        pos[b] = int(rng() % max_seq);
-    }
+    for (int b = 0; b < B; b++) { slot[b] = perm[b]; pos[b] = int(rng() % max_seq); }
     std::vector<float> q = randn(rng, size_t(B) * n_heads * hd);
-    std::vector<float> k = randn(rng, size_t(n_slots) * max_seq * kv_dim);
-    std::vector<float> v = randn(rng, size_t(n_slots) * max_seq * kv_dim);
+    const size_t pool_n = fx.table.size() * 16 * kv_dim;
+    std::vector<float> k = randn(rng, pool_n), v = randn(rng, pool_n);
     Dev<float> dq(q), dk(k), dv(v);
-    Dev<int> dslot(slot), dpos(pos);
+    Dev<int> dslot(slot), dpos(pos), dtab(fx.table);
     Dev<float> sc_bat(std::vector<float>(size_t(B) * n_heads * max_seq, 0.0f));
     Dev<float> ctx_bat(std::vector<float>(size_t(B) * n_heads * hd + kCanary, kCanaryValue));
     Dev<float> ctx_ref(std::vector<float>(size_t(B) * n_heads * hd, 0.0f));
@@ -462,58 +484,83 @@ void test_attention_batched(std::mt19937& rng, int n_slots, int B, int64_t n_hea
     for (int b = 0; b < B; b++) {
         const int64_t len = pos[b] + 1;
         max_len = std::max(max_len, len);
-        const float* kc = dk.p + size_t(slot[b]) * max_seq * kv_dim;
-        const float* vc = dv.p + size_t(slot[b]) * max_seq * kv_dim;
-        llm::gpu::launch_attention_cached_par(dq.p + b * n_heads * hd, kc, vc, sc_ref.p, len,
+        Dev<float> kc(fx.gather(k, slot[b], len, kv_dim)), vc(fx.gather(v, slot[b], len, kv_dim));
+        llm::gpu::launch_attention_cached_par(dq.p + b * n_heads * hd, kc.p, vc.p, sc_ref.p, len,
                                               n_heads, n_kv, hd, ctx_ref.p + b * n_heads * hd,
                                               llm::gpu::attention_par_threads(hd, max_seq));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
     llm::gpu::launch_attention_cached_batched(dq.p, dk.p, dv.p, sc_bat.p, dslot.p, dpos.p, B,
-                                              max_len, n_heads, n_kv, hd, max_seq, ctx_bat.p,
+                                              max_len, n_heads, n_kv, hd, dtab.p, fx.max_blocks,
+                                              max_seq, ctx_bat.p,
                                               llm::gpu::attention_par_threads(hd, max_seq));
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<float> a = ctx_ref.download(), c = ctx_bat.download();
-    // Both sides use the same thread count (from max_seq), hence the same
-    // reduction tree: results must match exactly.
+    // Same thread count on both sides -> same reduction tree -> exact.
     double worst = 0.0;
     for (size_t j = 0; j < a.size(); j++) if (a[j] != c[j]) worst = 1.0;
-    const std::string what = "batched/attn slots=" + std::to_string(n_slots) + " B=" +
+    const std::string what = "paged/attn slots=" + std::to_string(n_slots) + " B=" +
                              std::to_string(B) + " heads=" + std::to_string(n_heads) + "/" +
                              std::to_string(n_kv) + " hd=" + std::to_string(hd);
-    report(worst == 0.0, what, worst, 0, "(differs from row-by-row par kernel)");
+    report(worst == 0.0, what, worst, 0, "(differs from contiguous single-row kernel)");
     report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past ctx)");
 }
 
 void test_rope_append_batched(std::mt19937& rng, int n_slots, int B, int64_t n_heads,
                               int64_t n_kv, int64_t hd, int64_t max_seq) {
     const int64_t kv_dim = n_kv * hd;
+    PagedFixture fx(rng, n_slots, max_seq);
+    // Rows of the same slot get distinct positions: a real step never writes
+    // one (slot, position) twice, and two writers would make the result
+    // depend on thread order.
     std::vector<int> slot(B), pos(B);
-    for (int b = 0; b < B; b++) { slot[b] = b % n_slots; pos[b] = int(rng() % max_seq); }
+    for (int b = 0; b < B; b++) { slot[b] = b % n_slots; pos[b] = int((rng() % (max_seq / 8)) * 8 + b % 8) % int(max_seq); }
     std::vector<float> q = randn(rng, size_t(B) * n_heads * hd), k = randn(rng, size_t(B) * kv_dim),
                        v = randn(rng, size_t(B) * kv_dim), cos = randn(rng, size_t(max_seq) * hd),
                        sin = randn(rng, size_t(max_seq) * hd);
-    std::vector<float> cache0(size_t(n_slots) * max_seq * kv_dim, kCanaryValue);
+    const size_t pool_n = fx.table.size() * 16 * kv_dim;
+    std::vector<float> pool0(pool_n, kCanaryValue);   // untouched rows = canaries
     Dev<float> dk(k), dv(v), dcos(cos), dsin(sin);
-    Dev<int> dslot(slot), dpos(pos);
-    Dev<float> q_ref(q), kc_ref(cache0), vc_ref(cache0), q_bat(q), kc_bat(cache0), vc_bat(cache0);
+    Dev<int> dslot(slot), dpos(pos), dtab(fx.table);
+    Dev<float> q_ref(q), q_bat(q), kp(pool0), vp(pool0);
+    // Reference: the T=1 fused kernel writing into a 1-row destination per row.
+    std::vector<float> k_exp(pool0), v_exp(pool0);
     for (int b = 0; b < B; b++) {
-        const int64_t row = (int64_t(slot[b]) * max_seq + pos[b]) * kv_dim;
+        Dev<float> krow(std::vector<float>(size_t(kv_dim), 0.0f)), vrow(std::vector<float>(size_t(kv_dim), 0.0f));
         llm::gpu::launch_rope_qk_append(q_ref.p + b * n_heads * hd, dk.p + b * kv_dim,
                                         dv.p + b * kv_dim, dcos.p + pos[b] * hd,
-                                        dsin.p + pos[b] * hd, n_heads, n_kv, hd,
-                                        kc_ref.p + row, vc_ref.p + row);
+                                        dsin.p + pos[b] * hd, n_heads, n_kv, hd, krow.p, vrow.p);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::vector<float> kr = krow.download(), vr = vrow.download();
+        const int64_t row = fx.pool_row(slot[b], pos[b]) * kv_dim;
+        std::copy(kr.begin(), kr.end(), k_exp.begin() + row);
+        std::copy(vr.begin(), vr.end(), v_exp.begin() + row);
     }
     llm::gpu::launch_rope_qk_append_batched(q_bat.p, dk.p, dv.p, dcos.p, dsin.p, dslot.p, dpos.p,
-                                            B, n_heads, n_kv, hd, max_seq, kc_bat.p, vc_bat.p);
+                                            B, n_heads, n_kv, hd, dtab.p, fx.max_blocks, kp.p, vp.p);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
-    const std::string what = "batched/rope_append slots=" + std::to_string(n_slots) + " B=" +
+    const std::string what = "paged/rope_append slots=" + std::to_string(n_slots) + " B=" +
                              std::to_string(B) + " hd=" + std::to_string(hd);
     report(q_ref.download() == q_bat.download(), what + " q", 1, 0, "(q differs)");
-    report(kc_ref.download() == kc_bat.download(), what + " k cache", 1, 0, "(k cache differs)");
-    report(vc_ref.download() == vc_bat.download(), what + " v cache", 1, 0, "(v cache differs)");
+    report(kp.download() == k_exp, what + " k pool", 1, 0, "(k pool differs: wrong row or leak)");
+    report(vp.download() == v_exp, what + " v pool", 1, 0, "(v pool differs: wrong row or leak)");
+}
+
+void test_block_copy(std::mt19937& rng, int64_t kv_dim) {
+    const int n_blocks = 5;
+    std::vector<float> k = randn(rng, size_t(n_blocks) * 16 * kv_dim), v = randn(rng, k.size());
+    Dev<float> dk(k), dv(v);
+    llm::gpu::launch_block_copy(dk.p, dv.p, /*src=*/3, /*dst=*/1, kv_dim, dk.p, dv.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> ke(k), ve(v);
+    const size_t n = size_t(16) * kv_dim;
+    std::copy_n(k.begin() + 3 * n, n, ke.begin() + 1 * n);
+    std::copy_n(v.begin() + 3 * n, n, ve.begin() + 1 * n);
+    report(dk.download() == ke && dv.download() == ve, "paged/block_copy kv_dim=" +
+           std::to_string(kv_dim), 1, 0, "(copy wrong or touched other blocks)");
 }
 
 void test_argmax_rows(std::mt19937& rng, int B, int64_t V) {
@@ -606,6 +653,7 @@ int main(int argc, char** argv) {
             }
         }
         for (int B : {1, 4}) for (int64_t V : {1, 255, 257, 151936}) test_argmax_rows(rng, B, V);
+        for (int64_t kv : {8, 128, 256}) test_block_copy(rng, kv);
     }
 
     if (selftest) {
