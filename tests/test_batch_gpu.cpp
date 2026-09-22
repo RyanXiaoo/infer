@@ -226,6 +226,27 @@ int main() {
         }
     }
 
+    // (f) Stage 9: per-row sampling. temperature 0 is exact greedy (all tests above);
+    // temperature 0.8 with a fixed seed is reproducible across runs and differs
+    // from greedy; two seeds differ from each other.
+    {
+        const llm::GemmPath gemm = llm::GemmPath::kMine;
+        auto run = [&](float temp, uint64_t seed) {
+            llm::GpuBatch batch(gpu, 1, kMaxSeq, gemm);
+            llm::SampleParams sp; sp.temperature = temp; sp.seed = seed;
+            std::vector<int64_t> out{batch.prefill(0, prompts[0], sp)};
+            for (int t = 1; t < N; t++) out.push_back(batch.step({{0, out.back(), sp}})[0]);
+            return out;
+        };
+        const auto greedy = run(0.0f, 0), s1 = run(0.8f, 7), s1b = run(0.8f, 7), s2 = run(0.8f, 8);
+        const auto ref = llm::greedy_decode_cached_gpu(gpu, prompts[0], N, kMaxSeq, gemm);
+        if (greedy != ref) { failures++; std::printf("FAIL sampling: T=0 differs from greedy\n"); }
+        if (s1 != s1b) { failures++; std::printf("FAIL sampling: same seed not reproducible\n"); }
+        if (s1 == greedy && s2 == greedy) { failures++; std::printf("FAIL sampling: T=0.8 identical to greedy\n"); }
+        if (s1 == s2) { failures++; std::printf("FAIL sampling: two seeds identical\n"); }
+        std::printf("sampling: T=0 == greedy, seed 7 reproducible, seeds 7/8 %s\n", s1 == s2 ? "SAME" : "differ");
+    }
+
     if (failures == 0) { std::printf("test_batch_gpu: batched == single on all prompts\n"); return 0; }
     std::printf("test_batch_gpu: %d FAILURES\n", failures);
     return 1;

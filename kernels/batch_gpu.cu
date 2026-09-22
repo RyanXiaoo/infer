@@ -12,7 +12,7 @@
 namespace llm {
 
 namespace {
-struct Row { int slot; int64_t pos; int64_t token; };
+struct Row { int slot; int64_t pos; int64_t token; SampleParams sample; };
 
 // Row scratch for one forward of up to `rows` rows. Decode uses a 32-row
 // scratch (kept, and captured into graphs); prefill uses a 256-row scratch so
@@ -21,6 +21,7 @@ struct Scratch {
     int rows = 0;
     bool all_logits = true;   // false: prefill, only the last row's logits are wanted
     DevBuf d_ids, d_slot, d_pos, d_out;
+    DevBuf d_temp, d_seed, d_step;   // per-row sampling: temperature, seed, position (RNG counter)
     DevBuf h, normed, q, k, v, ctx, delta, gate, up, scores, logits;
     DevBuf part_m, part_l, part_o;   // flash-decoding partials [R x nh x splits (x hd)]
     void alloc(int R, bool all, int64_t H, int64_t q_out, int64_t kv_out, int64_t I, int64_t nh,
@@ -34,6 +35,7 @@ struct Scratch {
         const int LR = all ? R : 32;
         d_ids = DevBuf(size_t(R) * 8); d_slot = DevBuf(size_t(R) * 4);
         d_pos = DevBuf(size_t(R) * 4); d_out = DevBuf(size_t(R) * 8);
+        d_temp = DevBuf(size_t(R) * 4); d_seed = DevBuf(size_t(R) * 8); d_step = DevBuf(size_t(R) * 8);
         h = DevBuf(size_t(R) * H * 4); normed = DevBuf(size_t(R) * H * 4);
         q = DevBuf(size_t(R) * q_out * 4); k = DevBuf(size_t(R) * kv_out * 4);
         v = DevBuf(size_t(R) * kv_out * 4); ctx = DevBuf(size_t(R) * q_out * 4);
@@ -206,7 +208,8 @@ struct GpuBatch::Impl {
         if (S.all_logits) {
             gpu::launch_rmsnorm(S.h.f(), M.final_norm.bf(), eps, B, H, S.normed.f());
             linear_b(S.normed.f(), M.embed_tokens, nullptr, B, H, V, S.logits.f());
-            gpu::launch_argmax_rows(S.logits.f(), B, V, S.d_out.i64());
+            gpu::launch_sample_rows(S.logits.f(), B, V, S.d_temp.f(),
+                                    static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
         } else {
             // Last row only. The batched GEMV reads a whole 32-row group of its
             // input, so run it over the 32-row window ending at the last row
@@ -216,7 +219,9 @@ struct GpuBatch::Impl {
             gpu::launch_rmsnorm(S.h.f() + last * H, M.final_norm.bf(), eps, 1, H, S.normed.f() + last * H);
             const int Bw = int(last - start + 1);
             linear_b(S.normed.f() + start * H, M.embed_tokens, nullptr, Bw, H, V, S.logits.f());
-            gpu::launch_argmax_rows(S.logits.f() + (Bw - 1) * V, 1, V, S.d_out.i64());
+            // Sampling params of the last row are staged in element 0.
+            gpu::launch_sample_rows(S.logits.f() + (Bw - 1) * V, 1, V, S.d_temp.f(),
+                                    static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
         }
     }
 
@@ -224,13 +229,21 @@ struct GpuBatch::Impl {
     // S.logits_rows argmax ids (all rows, or just the last).
     void forward_rows(Scratch& S, const std::vector<Row>& rows, int64_t* out) {
         const int B = int(rows.size());
-        std::vector<int64_t> ids(B);
+        std::vector<int64_t> ids(B), steps(B), seeds(B);
         std::vector<int> slot(B), p(B);
-        for (int b = 0; b < B; b++) { ids[b] = rows[b].token; slot[b] = rows[b].slot; p[b] = int(rows[b].pos); }
+        std::vector<float> temp(B);
+        for (int b = 0; b < B; b++) {
+            ids[b] = rows[b].token; slot[b] = rows[b].slot; p[b] = int(rows[b].pos);
+            temp[b] = rows[b].sample.temperature; seeds[b] = int64_t(rows[b].sample.seed); steps[b] = rows[b].pos;
+        }
+        if (!S.all_logits) { temp[0] = temp[B - 1]; seeds[0] = seeds[B - 1]; steps[0] = steps[B - 1]; }
         if (table_dirty) sync_table();
         CUDA_CHECK(cudaMemcpy(S.d_ids.p, ids.data(), B * 8, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(S.d_slot.p, slot.data(), B * 4, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(S.d_pos.p, p.data(), B * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(S.d_temp.p, temp.data(), B * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(S.d_seed.p, seeds.data(), B * 8, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(S.d_step.p, steps.data(), B * 8, cudaMemcpyHostToDevice));
         const bool graph = use_graphs && &S == &dec;
         if (graph) {
             cudaGraphExec_t& exec = graphs[size_t(B)];
@@ -257,7 +270,7 @@ struct GpuBatch::Impl {
         return pool.n_free() >= BlockTable::blocks_needed(prompt_len) + 1;
     }
 
-    int64_t prefill(int slot, const std::vector<int64_t>& ids, SampleParams) {
+    int64_t prefill(int slot, const std::vector<int64_t>& ids, SampleParams sample) {
         const int64_t T = int64_t(ids.size());
         if (slot < 0 || slot >= n_slots) throw std::runtime_error("prefill: bad slot");
         if (T == 0 || T > max_seq) throw std::runtime_error("prefill: bad prompt length");
@@ -284,7 +297,7 @@ struct GpuBatch::Impl {
         for (int64_t r0 = reused; r0 < T; r0 += S->rows) {
             std::vector<Row> rows;
             for (int64_t p = r0; p < std::min(T, r0 + int64_t(S->rows)); p++)
-                rows.push_back({slot, p, ids[size_t(p)]});
+                rows.push_back({slot, p, ids[size_t(p)], sample});
             int64_t outs[kMaxRows];
             forward_rows(*S, rows, outs);
             first = S == &dec ? outs[rows.size() - 1] : outs[0];
@@ -306,7 +319,7 @@ struct GpuBatch::Impl {
             if (srows[b].token < 0 || srows[b].token >= V) throw std::runtime_error("token id out of range");
             BlockTable& t = tables[size_t(s)];
             if (t.length >= max_seq) continue;   // stays -1: cache full for this row
-            rows.push_back({s, t.length, srows[b].token});
+            rows.push_back({s, t.length, srows[b].token, srows[b].sample});
             idx.push_back(size_t(b));
         }
         std::vector<bool> failed;

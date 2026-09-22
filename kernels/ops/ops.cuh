@@ -140,6 +140,10 @@ void launch_block_copy(const float* k_pool, const float* v_pool, int src, int ds
 void launch_gemm_tiled(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
                        int64_t T, int64_t in, int64_t out, float* y);
 
+// out[b] = sample from softmax(logits[b] / temperature[b]) via Gumbel-max with a
+// counter-based RNG keyed by (seed[b], step[b]); temperature 0 = exact argmax.
+void launch_sample_rows(const float* logits, int B, int64_t V, const float* temperature,
+                        const uint64_t* seed, const int64_t* step, int64_t* out);
 // out[b] = argmax over logits[b*V .. b*V+V) (lowest index on ties).
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out);
 

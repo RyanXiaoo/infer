@@ -353,6 +353,49 @@ __global__ void attention_combine_kernel(const float* part_m, const float* part_
     }
 }
 
+// Per-row sampling (Stage 9): temperature via Gumbel-max. argmax over
+// (logit / T + g) with g ~ Gumbel(0, 1) is an exact sample from
+// softmax(logits / T); T = 0 falls back to the plain argmax, bit for bit.
+// The noise comes from a counter-based hash of (seed, step, index), so a
+// request with a fixed seed is reproducible and needs no RNG state.
+__device__ inline float gumbel_noise(uint64_t seed, uint64_t step, uint64_t v) {
+    uint64_t x = seed * 0x9E3779B97F4A7C15ull ^ (step + 0x632BE59BD9B4E019ull) * 0xBF58476D1CE4E5B9ull ^ v;
+    x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29;
+    // uniform in (0, 1): top 24 bits, never exactly 0
+    const float u = (float((x >> 40) & 0xFFFFFF) + 0.5f) / 16777216.0f;
+    return -logf(-logf(u));
+}
+
+__global__ void sample_rows_kernel(const float* logits, int64_t V, const float* temperature,
+                                   const uint64_t* seed, const int64_t* step, int64_t* out) {
+    extern __shared__ float sv[];
+    int64_t* si = reinterpret_cast<int64_t*>(sv + blockDim.x);
+    const int b = blockIdx.x;
+    const float* row = logits + int64_t(b) * V;
+    const float T = temperature[b];
+    float best = -INFINITY;
+    int64_t besti = 0;
+    for (int64_t v = threadIdx.x; v < V; v += blockDim.x) {
+        const float x = T > 0.0f ? row[v] / T + gumbel_noise(seed[b], uint64_t(step[b]), uint64_t(v)) : row[v];
+        if (x > best) { best = x; besti = v; }
+    }
+    sv[threadIdx.x] = best;
+    si[threadIdx.x] = besti;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            const float ov = sv[threadIdx.x + stride];
+            const int64_t oi = si[threadIdx.x + stride];
+            if (ov > sv[threadIdx.x] || (ov == sv[threadIdx.x] && oi < si[threadIdx.x])) {
+                sv[threadIdx.x] = ov;
+                si[threadIdx.x] = oi;
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[b] = si[0];
+}
+
 // argmax over each row of logits// argmax over each row of logits [B x V]: one block per row, strided scan +
 // block reduce on (value, index); ties -> lowest index, matching the CPU loop.
 __global__ void argmax_rows_kernel(const float* logits, int64_t V, int64_t* out) {
@@ -454,6 +497,13 @@ void launch_attention_split(const float* q, const float* k_cache, const float* v
                                                     part_o);
     const dim3 cgrid{unsigned(n_heads), unsigned(B), 1u};
     attention_combine_kernel<<<cgrid, 128>>>(part_m, part_l, part_o, n_heads, hd, splits, ctx);
+}
+
+void launch_sample_rows(const float* logits, int B, int64_t V, const float* temperature,
+                        const uint64_t* seed, const int64_t* step, int64_t* out) {
+    const int threads = 256;
+    sample_rows_kernel<<<B, threads, threads * (sizeof(float) + sizeof(int64_t))>>>(
+        logits, V, temperature, seed, step, out);
 }
 
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out) {
