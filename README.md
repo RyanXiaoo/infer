@@ -47,6 +47,14 @@ decoded token, 1024-token prompts from 27 to 72 tok/s at 16 slots, and short-con
 182 / 696 tok/s at 1 / 16 slots (`bench/stage8_serve_*.json`). `viz/index.html` replays any
 run's scheduler event log: slot timeline, batch size, KV blocks in use, preemptions.
 
+Serving (Stage 9): an OpenAI-compatible HTTP server (`main_server`, cpp-httplib) with SSE
+streaming, per-request seeded temperature sampling on the device, and cancellation that returns a
+disconnected client's KV blocks within one scheduler step. Over HTTP on the box: 623 tok/s at 16
+concurrent clients (696 in-process), 12 ms time-to-first-token at light load; with half the
+streams closed mid-generation, zero KV blocks remain in use (`bench/stage9_load_*.json`). The
+tokenizer matches HuggingFace on an adversarial corpus (CJK, emoji, combining marks, mixed
+scripts): full Unicode classes and NFC normalization from generated tables.
+
 On the 1.5B model the single-sequence decode GEMV reads weights at 791 GB/s against a measured achievable
 784 GB/s (STREAM-style, `kernels/bench/stream_bench.cu`): the kernel sits at the memory-bandwidth
 roofline. The theoretical single-sequence ceiling is 254 tok/s; the engine reaches 178, and the gap
@@ -74,9 +82,10 @@ Per-kernel evidence (Nsight Compute, `bench/stage5_ncu_counters.json`), naive ke
 | 6 | Batched decode (weights read once per step for up to 32 sequences) and a continuous-batching scheduler with a preallocated event ring; throughput-vs-latency sweep | `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `src/scheduler.cpp`, `src/main_serve_bench.cpp` |
 | 7 | Paged KV cache: 16-position blocks, per-sequence block tables, free-list allocator with refcounts, prefix cache with copy-on-write, recompute-style preemption under a byte budget | `src/block_pool.cpp`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu` |
 | 8 | Tiled prefill GEMM (64x64 shared-memory tiles), flash-decoding attention over the paged cache (split positions, online-softmax partials, combine), CUDA-graph replay of the batched step, event-log replay visualizer | `kernels/ops/gemm.cu`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `viz/index.html` |
+| 9 | HTTP serving: engine thread + streaming request handles, cancellation, metrics; OpenAI-compatible completions/chat with SSE; Gumbel-max sampling kernel; load generator; tokenizer Unicode classes + NFC | `src/serve.cpp`, `src/main_server.cpp`, `tools/load_gen.py`, `src/unicode_tables.h` |
 
-Planned: HTTP serving with cancellation (9), int8/int4 quantization (10), speculative decoding
-(11); tensor-core (bf16 mma) prefill attention and GEMM.
+Planned: int8/int4 quantization (10), speculative decoding (11); tensor-core (bf16 mma) prefill
+attention and GEMM; top-k/top-p in the batched path.
 
 ## Correctness discipline
 
@@ -93,8 +102,12 @@ Planned: HTTP serving with cancellation (9), int8/int4 quantization (10), specul
 - `tests/test_batch_gpu`: batched decode must equal single-sequence decode per row, both in
   lockstep and with requests joining and leaving a running batch; also under a KV budget that
   forces preemption, and with a shared prefix served from the prefix cache.
-- `tests/test_block_pool`, `tests/test_scheduler`: allocator, prefix cache, copy-on-write and
-  scheduler policy (admission, retirement, preemption) on the Mac against a fake engine.
+- `tests/test_block_pool`, `tests/test_scheduler`, `tests/test_serve`: allocator, prefix cache,
+  copy-on-write, scheduler policy (admission, retirement, preemption, cancellation) and the
+  serving lifecycle (100 concurrent clients with random cancels must leave zero blocks in use),
+  on the Mac against a fake engine.
+- `tests/test_tokenizer`: exact HF ids on an ordinary corpus and on an adversarial one (CJK,
+  emoji, combining marks, mixed scripts, whitespace, code), plus the chat template.
 - `tools/sanitize.sh`: memcheck, racecheck, initcheck, synccheck, clean before a stage is called done.
 - Bisection: a golden-ladder failure on `--gemm=mine` that disappears on `--gemm=cublas` is a GEMV
   bug; one that persists is in RoPE, attention, norms or glue.
@@ -113,6 +126,7 @@ Planned: HTTP serving with cancellation (9), int8/int4 quantization (10), specul
 8. Batching and continuous batching (to be written)
 9. Paged KV cache (to be written)
 10. Long context, CUDA graphs and the replay visualizer (to be written)
+11. Serving and cancellation (to be written)
 
 ## Building and running
 
@@ -139,6 +153,11 @@ LLM_MODEL=Qwen2.5-1.5B-Instruct ./build/test_forward_gpu
 ./build/main_serve_bench slots=1,2,4,8,16,32
 ./build/main_serve_bench slots=16 max_seq=4096 budget_mb=64 prefix=64 graphs=1
 # then open viz/index.html and drop bench/events_*.jsonl
+
+# Serve (Stage 9) and load it:
+./build/main_server --port 8080 --slots 16 --max-seq 2048 --model Qwen2.5-1.5B-Instruct
+curl -N localhost:8080/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hi"}],"stream":true}'
+tools/load_gen.py --url http://localhost:8080 --requests 64 --concurrency 16
 ```
 
 Model weights, goldens and profiler reports are not committed; `bench/*.json` records are.
