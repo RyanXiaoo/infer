@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scheduler replay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1f; --muted:#6e6e73; --line:#d9d9de; --panel:#ffffff;
+          --admit:#3b82f6; --retire:#10b981; --preempt:#ef4444; --step:#8b5cf6; --blocks:#f59e0b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#111114; --fg:#f2f2f4; --muted:#9a9aa3; --line:#2e2e36; --panel:#1a1a1f; } }
+  :root[data-theme="dark"] { --bg:#111114; --fg:#f2f2f4; --muted:#9a9aa3; --line:#2e2e36; --panel:#1a1a1f; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg);
+         font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin-bottom:12px; }
+  .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .drop { border:1px dashed var(--line); border-radius:8px; padding:10px 14px; flex:1; min-width:240px;
+          background:var(--panel); }
+  .drop.over { border-color:var(--admit); }
+  button, label.btn { border:1px solid var(--line); background:var(--panel); color:var(--fg);
+          border-radius:6px; padding:6px 10px; cursor:pointer; font:inherit; }
+  input[type=file] { display:none; }
+  .stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin:12px 0; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .stat b { display:block; font-size:20px; font-variant-numeric: tabular-nums; }
+  .stat span { color:var(--muted); font-size:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:12px; }
+  .panel h2 { font-size:13px; margin:2px 4px 6px; color:var(--muted); font-weight:600; }
+  canvas { width:100%; display:block; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:2px 4px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  #tip { position:fixed; pointer-events:none; background:var(--fg); color:var(--bg); padding:6px 8px;
+         border-radius:6px; font-size:12px; display:none; white-space:pre; z-index:9; }
+</style>
+</head>
+<body>
+<h1>Scheduler replay</h1>
+<div class="sub">Drop an <code>events_*.jsonl</code> written by the engine's scheduler. One lane per KV slot; a bar is a request from admit to retire.</div>
+<div class="bar">
+  <div class="drop" id="drop">Drop a file here, or <label class="btn" for="file">choose a file</label><input id="file" type="file" accept=".jsonl,.json,.txt"></div>
+  <button id="demo">Load built-in sample</button>
+  <button id="png">Export timeline PNG</button>
+</div>
+<div class="stats" id="stats"></div>
+<div class="panel"><h2>Slot timeline</h2>
+  <div class="legend"><span><i style="background:var(--admit)"></i>request (admit to retire)</span><span><i style="background:var(--preempt)"></i>preempted</span><span><i style="background:var(--retire)"></i>retire</span></div>
+  <canvas id="timeline" height="240"></canvas></div>
+<div class="panel"><h2>Batch size and KV blocks in use, per step</h2>
+  <div class="legend"><span><i style="background:var(--step)"></i>rows decoded</span><span><i style="background:var(--blocks)"></i>blocks in use</span><span><i style="background:var(--line)"></i>pool size</span></div>
+  <canvas id="load" height="160"></canvas></div>
+<div class="panel"><h2>Step duration (ms)</h2><canvas id="dur" height="120"></canvas></div>
+<div id="tip"></div>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let events = [], bars = [], hoverTargets = [];
+
+function parse(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const s = line.trim(); if (!s) continue;
+    try { out.push(JSON.parse(s)); } catch (e) { /* skip */ }
+  }
+  return out;
+}
+
+function build(evs) {
+  events = evs;
+  const active = new Map();   // slot -> bar
+  bars = [];
+  const steps = evs.filter(e => e.kind === 'step');
+  const tEnd = evs.length ? Math.max(...evs.map(e => e.t_ms + (e.dur_ms || 0))) : 0;
+  for (const e of evs) {
+    if (e.kind === 'admit') {
+      const b = { slot: e.slot, req: e.request, t0: e.t_ms, t1: null, tokens: 0, prompt: e.tokens,
+                  prefill_ms: e.dur_ms, preempted: false, step0: e.step };
+      active.set(e.slot, b); bars.push(b);
+    } else if (e.kind === 'retire' || e.kind === 'preempt') {
+      const b = active.get(e.slot);
+      if (b) { b.t1 = e.t_ms; b.tokens = e.tokens; b.preempted = e.kind === 'preempt'; b.step1 = e.step; active.delete(e.slot); }
+    }
+  }
+  for (const b of active.values()) b.t1 = tEnd;
+  const done = bars.filter(b => !b.preempted && b.tokens > 0);
+  const lat = done.map(b => b.t1 - b.t0).sort((a, b) => a - b);
+  const pct = p => lat.length ? lat[Math.min(lat.length - 1, Math.round(p * (lat.length - 1)))] : 0;
+  const tokens = done.reduce((s, b) => s + b.tokens, 0);
+  const preempts = evs.filter(e => e.kind === 'preempt').length;
+  const peak = Math.max(0, ...evs.map(e => e.blocks_in_use || 0));
+  const total = Math.max(0, ...evs.map(e => e.blocks_total || 0));
+  const meanStep = steps.length ? steps.reduce((s, e) => s + e.dur_ms, 0) / steps.length : 0;
+  const stats = [
+    ['requests', done.length + (bars.length - done.length ? ` (+${bars.length - done.length} open)` : '')],
+    ['throughput', (tokens / (tEnd / 1e3)).toFixed(1) + ' tok/s'],
+    ['steps', steps.length + ' (' + meanStep.toFixed(2) + ' ms mean)'],
+    ['request latency p50 / p95', pct(0.5).toFixed(0) + ' / ' + pct(0.95).toFixed(0) + ' ms'],
+    ['preemptions', String(preempts)],
+    ['peak KV blocks', total ? `${peak} of ${total}` : String(peak)],
+  ];
+  $('stats').innerHTML = stats.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
+  draw();
+}
+
+function setup(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = parseInt(canvas.getAttribute('height'));
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  return { ctx, w, h };
+}
+
+function axisX(ctx, x0, x1, y, tEnd) {
+  ctx.strokeStyle = css('--line'); ctx.fillStyle = css('--muted');
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  const n = 6;
+  for (let i = 0; i <= n; i++) {
+    const t = tEnd * i / n, x = x0 + (x1 - x0) * i / n;
+    ctx.fillText((t / 1e3).toFixed(1) + ' s', x - 10, y + 13);
+  }
+}
+
+function draw() {
+  hoverTargets = [];
+  if (!events.length) return;
+  const tEnd = Math.max(...events.map(e => e.t_ms + (e.dur_ms || 0)));
+  const slots = 1 + Math.max(-1, ...bars.map(b => b.slot));
+  // --- timeline
+  {
+    const c = $('timeline'); c.setAttribute('height', String(Math.max(120, 24 + slots * 14 + 20)));
+    const { ctx, w, h } = setup(c);
+    const x0 = 40, x1 = w - 8, y0 = 8, lane = 14, X = t => x0 + (x1 - x0) * t / tEnd;
+    ctx.fillStyle = css('--muted');
+    for (let s = 0; s < slots; s++) ctx.fillText('slot ' + s, 2, y0 + s * lane + 10);
+    for (const b of bars) {
+      const y = y0 + b.slot * lane + 2, xa = X(b.t0), xb = X(b.t1);
+      ctx.fillStyle = b.preempted ? css('--preempt') : css('--admit');
+      ctx.globalAlpha = 0.85; ctx.fillRect(xa, y, Math.max(1, xb - xa), lane - 4); ctx.globalAlpha = 1;
+      if (b.prefill_ms) { ctx.fillStyle = css('--fg'); ctx.globalAlpha = 0.25; ctx.fillRect(xa, y, Math.max(1, X(b.t0 + b.prefill_ms) - xa), lane - 4); ctx.globalAlpha = 1; }
+      hoverTargets.push({ x: xa, y, w: Math.max(3, xb - xa), h: lane - 4,
+        text: `request ${b.req}  slot ${b.slot}\nprompt ${b.prompt} tokens, generated ${b.tokens}\n${b.t0.toFixed(0)} -> ${b.t1.toFixed(0)} ms (${(b.t1 - b.t0).toFixed(0)} ms)${b.preempted ? '\nPREEMPTED' : ''}` });
+    }
+    for (const e of events) if (e.kind === 'retire') {
+      ctx.fillStyle = css('--retire'); ctx.fillRect(X(e.t_ms) - 1, y0 + e.slot * lane + 2, 2, lane - 4);
+    }
+    axisX(ctx, x0, x1, y0 + slots * lane + 4, tEnd);
+  }
+  // --- load: batch size + blocks
+  {
+    const { ctx, w, h } = setup($('load'));
+    const x0 = 40, x1 = w - 8, y0 = 8, y1 = h - 20, X = t => x0 + (x1 - x0) * t / tEnd;
+    const steps = events.filter(e => e.kind === 'step');
+    const maxB = Math.max(1, ...steps.map(e => e.batch));
+    const total = Math.max(0, ...events.map(e => e.blocks_total || 0));
+    const maxBlk = Math.max(1, total, ...events.map(e => e.blocks_in_use || 0));
+    axisX(ctx, x0, x1, y1, tEnd);
+    ctx.fillStyle = css('--muted'); ctx.fillText(maxB + ' rows', 2, y0 + 10); ctx.fillText(maxBlk + ' blk', 2, y1 - 2);
+    const line = (pts, color, ymax) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+      pts.forEach((p, i) => { const x = X(p.t), y = y1 - (y1 - y0) * p.v / ymax; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke(); ctx.lineWidth = 1;
+    };
+    line(steps.map(e => ({ t: e.t_ms, v: e.batch })), css('--step'), maxB);
+    const blk = events.filter(e => 'blocks_in_use' in e).map(e => ({ t: e.t_ms, v: e.blocks_in_use }));
+    if (blk.length) line(blk, css('--blocks'), maxBlk);
+    if (total) { ctx.strokeStyle = css('--line'); ctx.setLineDash([4, 4]); const y = y1 - (y1 - y0) * total / maxBlk; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]); }
+  }
+  // --- step durations
+  {
+    const { ctx, w, h } = setup($('dur'));
+    const x0 = 40, x1 = w - 8, y0 = 8, y1 = h - 20, X = t => x0 + (x1 - x0) * t / tEnd;
+    const steps = events.filter(e => e.kind === 'step' && e.batch > 0);
+    const maxD = Math.max(1, ...steps.map(e => e.dur_ms));
+    axisX(ctx, x0, x1, y1, tEnd);
+    ctx.fillStyle = css('--muted'); ctx.fillText(maxD.toFixed(0) + ' ms', 2, y0 + 10);
+    ctx.fillStyle = css('--step'); ctx.globalAlpha = 0.5;
+    for (const e of steps) { const x = X(e.t_ms), y = y1 - (y1 - y0) * e.dur_ms / maxD; ctx.fillRect(x - 1, y, 2, y1 - y); }
+    ctx.globalAlpha = 1;
+    // moving mean over 15 steps
+    ctx.strokeStyle = css('--fg'); ctx.beginPath();
+    steps.forEach((e, i) => { const win = steps.slice(Math.max(0, i - 7), i + 8); const m = win.reduce((s, q) => s + q.dur_ms, 0) / win.length;
+      const x = X(e.t_ms), y = y1 - (y1 - y0) * m / maxD; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke();
+  }
+}
+
+// hover on the timeline
+const tip = $('tip');
+$('timeline').addEventListener('mousemove', ev => {
+  const r = ev.target.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  const t = hoverTargets.find(h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+  if (!t) { tip.style.display = 'none'; return; }
+  tip.textContent = t.text; tip.style.display = 'block'; tip.style.left = (ev.clientX + 12) + 'px'; tip.style.top = (ev.clientY + 12) + 'px';
+});
+$('timeline').addEventListener('mouseleave', () => tip.style.display = 'none');
+
+// file loading
+const load = f => f.text().then(t => build(parse(t)));
+$('file').addEventListener('change', e => e.target.files[0] && load(e.target.files[0]));
+const drop = $('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && load(e.dataTransfer.files[0]); });
+$('png').addEventListener('click', () => { const a = document.createElement('a'); a.download = 'timeline.png'; a.href = $('timeline').toDataURL('image/png'); a.click(); });
+window.addEventListener('resize', draw);
+
+// built-in sample: a synthetic 4-slot run with one preemption, so the page shows
+// something before a real log is dropped.
+$('demo').addEventListener('click', () => {
+  const ev = []; let t = 0, step = 0, inUse = 0; const total = 40;
+  const push = (o) => ev.push(Object.assign({ step, t_ms: t, blocks_in_use: inUse, blocks_total: total }, o));
+  const slots = [null, null, null, null]; let nextReq = 0; const queue = Array.from({ length: 10 }, (_, i) => ({ id: i, len: 20 + (i * 7) % 30 }));
+  while (queue.length || slots.some(Boolean)) {
+    for (let s = 0; s < 4; s++) if (slots[s] && slots[s].done >= slots[s].len) { inUse -= 2 + Math.ceil(slots[s].len / 16); push({ kind: 'retire', slot: s, request: slots[s].id, tokens: slots[s].len, dur_ms: 0, reason: 1 }); slots[s] = null; }
+    for (let s = 0; s < 4 && queue.length; s++) if (!slots[s]) { const q = queue.shift(); slots[s] = { id: q.id, len: q.len, done: 1 }; inUse += 2; push({ kind: 'admit', slot: s, request: q.id, tokens: 8, dur_ms: 9, reason: 0 }); t += 9; }
+    if (step === 35 && slots[3]) { const v = slots[3]; queue.unshift({ id: v.id, len: v.len }); push({ kind: 'preempt', slot: 3, request: v.id, tokens: 0, dur_ms: 0, reason: 0 }); slots[3] = null; }
+    const rows = slots.filter(Boolean).length; const dur = 6 + rows * 1.2 + Math.random();
+    for (const sl of slots) if (sl) { sl.done++; if (sl.done % 16 === 0) inUse++; }
+    push({ kind: 'step', slot: -1, request: -1, batch: rows, tokens: rows, dur_ms: dur, reason: 0 });
+    t += dur; step++;
+  }
+  build(ev);
+});
+})();
+</script>
+</body>
+</html>
