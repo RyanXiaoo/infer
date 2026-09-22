@@ -41,6 +41,12 @@ where reservation would hold 3.8 GB. A shared 64-token prompt prefix served from
 takes throughput from 285 to 624 tok/s and halves blocks in use; at a 32 MB budget the scheduler
 preempts (47 evictions) and still serves 442 tok/s (`bench/stage7_serve_*.json`).
 
+Long context and host overhead (Stage 8), 1.5B: a tiled prefill GEMM, CUDA-graph replay of the
+decode step and flash-decoding attention take a 3000-token context from 146 ms to 6.6 ms per
+decoded token, 1024-token prompts from 27 to 72 tok/s at 16 slots, and short-context serving to
+182 / 696 tok/s at 1 / 16 slots (`bench/stage8_serve_*.json`). `viz/index.html` replays any
+run's scheduler event log: slot timeline, batch size, KV blocks in use, preemptions.
+
 On the 1.5B model the single-sequence decode GEMV reads weights at 791 GB/s against a measured achievable
 784 GB/s (STREAM-style, `kernels/bench/stream_bench.cu`): the kernel sits at the memory-bandwidth
 roofline. The theoretical single-sequence ceiling is 254 tok/s; the engine reaches 178, and the gap
@@ -67,10 +73,10 @@ Per-kernel evidence (Nsight Compute, `bench/stage5_ncu_counters.json`), naive ke
 | 5 | Profile-driven kernel optimization: parallel cached attention (one block per head), row-parallel GEMV (one block per output row, interleaved loads, tree reduce), fused decode step (16 -> 9 launches per layer, bit-identical), hoisted per-token host work; STREAM bandwidth bench; roofline; ncu counters; second model (1.5B) with zero engine changes | `kernels/ops/cache.cu`, `kernels/ops/linear.cu`, `kernels/bench/`, `tools/nsys_kernel_summary.py`, `tools/ncu_stage5.sh` |
 | 6 | Batched decode (weights read once per step for up to 32 sequences) and a continuous-batching scheduler with a preallocated event ring; throughput-vs-latency sweep | `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `src/scheduler.cpp`, `src/main_serve_bench.cpp` |
 | 7 | Paged KV cache: 16-position blocks, per-sequence block tables, free-list allocator with refcounts, prefix cache with copy-on-write, recompute-style preemption under a byte budget | `src/block_pool.cpp`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu` |
+| 8 | Tiled prefill GEMM (64x64 shared-memory tiles), flash-decoding attention over the paged cache (split positions, online-softmax partials, combine), CUDA-graph replay of the batched step, event-log replay visualizer | `kernels/ops/gemm.cu`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `viz/index.html` |
 
-Planned: fused flash-style attention over the paged layout
-and CUDA graphs (8), HTTP serving with cancellation (9), int8/int4 quantization (10), speculative
-decoding (11).
+Planned: HTTP serving with cancellation (9), int8/int4 quantization (10), speculative decoding
+(11); tensor-core (bf16 mma) prefill attention and GEMM.
 
 ## Correctness discipline
 
@@ -106,6 +112,7 @@ decoding (11).
 7. What limits speed once the kernels are fast (to be written)
 8. Batching and continuous batching (to be written)
 9. Paged KV cache (to be written)
+10. Long context, CUDA graphs and the replay visualizer (to be written)
 
 ## Building and running
 
@@ -130,7 +137,8 @@ LLM_MODEL=Qwen2.5-1.5B-Instruct ./build/test_forward_gpu
 
 # Serving sweep (Stages 6-7): key=value args
 ./build/main_serve_bench slots=1,2,4,8,16,32
-./build/main_serve_bench slots=16 max_seq=4096 budget_mb=64 prefix=64
+./build/main_serve_bench slots=16 max_seq=4096 budget_mb=64 prefix=64 graphs=1
+# then open viz/index.html and drop bench/events_*.jsonl
 ```
 
 Model weights, goldens and profiler reports are not committed; `bench/*.json` records are.
