@@ -1,6 +1,7 @@
 // tokenizer.cpp — see tokenizer.h.
 
 #include "tokenizer.h"
+#include "unicode_tables.h"
 
 #include <algorithm>
 #include <array>
@@ -46,8 +47,13 @@ std::string cp_to_utf8(int c) {
     } else if (c < 0x800) {
         s += char(0xC0 | (c >> 6));
         s += char(0x80 | (c & 0x3F));
-    } else {
+    } else if (c < 0x10000) {
         s += char(0xE0 | (c >> 12));
+        s += char(0x80 | ((c >> 6) & 0x3F));
+        s += char(0x80 | (c & 0x3F));
+    } else {   // astral plane (emoji, historic scripts): 4 bytes
+        s += char(0xF0 | (c >> 18));
+        s += char(0x80 | ((c >> 12) & 0x3F));
         s += char(0x80 | ((c >> 6) & 0x3F));
         s += char(0x80 | (c & 0x3F));
     }
@@ -79,17 +85,118 @@ int next_codepoint(const std::string& s, size_t& i) {
     return c;
 }
 
-// Codepoint classification for the GPT-2/Qwen pre-tokenizer regex.
-// ASCII-exact; any non-ASCII codepoint that is not obviously space/punct is
-// treated as a letter (the documented ASCII-exact scope).
-bool is_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
-                           c == '\f' || c == '\v'; }
-bool is_letter(int c) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return true;
-    if (c < 0x80) return false;      // ASCII non-letter
-    return !is_ws(c);                 // non-ASCII: treat as letter unless whitespace
+// Codepoint classification for the GPT-2/Qwen pre-tokenizer regex: \p{L},
+// \p{N} and \s over all of Unicode, from the generated range tables
+// (src/unicode_tables.h). ASCII takes the fast path.
+bool in_ranges(const unicode::Range* r, int n, uint32_t c) {
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (c < r[mid].lo) hi = mid - 1;
+        else if (c > r[mid].hi) lo = mid + 1;
+        else return true;
+    }
+    return false;
 }
-bool is_digit(int c) { return c >= '0' && c <= '9'; }
+bool is_ws(int c) {
+    if (c < 0x80) return c == ' ' || (c >= '\t' && c <= '\r') || c == 0x1C || c == 0x1D || c == 0x1E || c == 0x1F;
+    return in_ranges(unicode::kSpaces, unicode::kSpacesCount, uint32_t(c));
+}
+bool is_letter(int c) {
+    if (c < 0x80) return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    return in_ranges(unicode::kLetters, unicode::kLettersCount, uint32_t(c));
+}
+bool is_digit(int c) {
+    if (c < 0x80) return c >= '0' && c <= '9';
+    return in_ranges(unicode::kNumbers, unicode::kNumbersCount, uint32_t(c));
+}
+
+// NFC normalisation (the tokenizer.json "normalizer": e + U+0301 must become
+// the precomposed é before pre-tokenization, or the ids differ from HF).
+// Standard three passes: full canonical decomposition, canonical reordering
+// by combining class, then pairwise composition against the primary
+// composition table (Hangul handled algorithmically).
+int ccc_of(uint32_t c) {
+    int lo = 0, hi = unicode::kCccCount - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (c < unicode::kCcc[mid].cp) hi = mid - 1;
+        else if (c > unicode::kCcc[mid].cp) lo = mid + 1;
+        else return unicode::kCcc[mid].ccc;
+    }
+    return 0;
+}
+void decompose_into(uint32_t c, std::vector<uint32_t>& out) {
+    if (c >= 0xAC00 && c < 0xAC00 + 11172) {   // Hangul syllable -> L V (T)
+        const uint32_t s = c - 0xAC00;
+        out.push_back(0x1100 + s / 588);
+        out.push_back(0x1161 + (s % 588) / 28);
+        if (s % 28) out.push_back(0x11A7 + s % 28);
+        return;
+    }
+    int lo = 0, hi = unicode::kDecompCount - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (c < unicode::kDecomp[mid].cp) hi = mid - 1;
+        else if (c > unicode::kDecomp[mid].cp) lo = mid + 1;
+        else { for (int i = 0; i < unicode::kDecomp[mid].n; i++) out.push_back(unicode::kDecomp[mid].seq[i]); return; }
+    }
+    out.push_back(c);
+}
+uint32_t compose_pair(uint32_t a, uint32_t b) {
+    if (a >= 0x1100 && a < 0x1113 && b >= 0x1161 && b < 0x1176)   // L + V
+        return 0xAC00 + ((a - 0x1100) * 21 + (b - 0x1161)) * 28;
+    if (a >= 0xAC00 && a < 0xAC00 + 11172 && (a - 0xAC00) % 28 == 0 && b > 0x11A7 && b < 0x11C3)   // LV + T
+        return a + (b - 0x11A7);
+    int lo = 0, hi = unicode::kCompCount - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        const auto& e = unicode::kComp[mid];
+        if (a < e.a || (a == e.a && b < e.b)) hi = mid - 1;
+        else if (a > e.a || (a == e.a && b > e.b)) lo = mid + 1;
+        else return e.c;
+    }
+    return 0;
+}
+std::string nfc(const std::string& text) {
+    // Fast path: pure ASCII is already NFC.
+    bool ascii = true;
+    for (unsigned char ch : text) if (ch >= 0x80) { ascii = false; break; }
+    if (ascii) return text;
+    std::vector<uint32_t> cps;
+    for (size_t i = 0; i < text.size();) cps.push_back(uint32_t(next_codepoint(text, i)));
+    std::vector<uint32_t> d;
+    for (uint32_t c : cps) decompose_into(c, d);
+    // canonical ordering: stable sort runs of non-starters by ccc
+    for (size_t i = 0; i < d.size();) {
+        if (ccc_of(d[i]) == 0) { i++; continue; }
+        size_t j = i;
+        while (j < d.size() && ccc_of(d[j]) != 0) j++;
+        std::stable_sort(d.begin() + int64_t(i), d.begin() + int64_t(j),
+                         [](uint32_t x, uint32_t y) { return ccc_of(x) < ccc_of(y); });
+        i = j;
+    }
+    // composition: a char composes with the last starter unless a char in
+    // between blocks it (ccc 0, or ccc >= its own).
+    std::vector<uint32_t> out;
+    size_t starter = size_t(-1);
+    int last_cc = 0;
+    for (uint32_t c : d) {
+        const int cc = ccc_of(c);
+        if (starter != size_t(-1)) {
+            const bool blocked = out.size() > starter + 1 && (last_cc == 0 || last_cc >= cc);
+            if (!blocked) {
+                if (const uint32_t comp = compose_pair(out[starter], c)) { out[starter] = comp; continue; }
+            }
+        }
+        if (cc == 0) starter = out.size();
+        last_cc = cc;
+        out.push_back(c);
+    }
+    std::string r;
+    for (uint32_t c : out) r += cp_to_utf8(int(c));
+    return r;
+}
 
 } // namespace
 
@@ -226,18 +333,20 @@ std::vector<std::string> Tokenizer::pretokenize(const std::string& text) const {
             }
         }
 
-        // Whitespace runs (rules 5-7). A maximal run [p,q). If the run's last
-        // char is a plain space AND the next token is a letter or punct (never a
-        // digit), that one space is "donated" to the next token via the ` ?`
-        // lead in rules 2/4; we leave it behind. The rest is emitted as a
-        // whitespace piece. (Mixed space+newline+space runs are an ASCII-scope
-        // edge case; the golden test covers the ordinary ones.)
+        // Whitespace runs (rules 5-7). A maximal run [p,q). Its last char is
+        // "donated" to the next token when that token can take it as its lead:
+        // a letter run takes any single non-\r\n char ([^\r\n\p{L}\p{N}]?), a
+        // punct run takes only a plain space ( ?), a digit takes nothing. The
+        // rest is emitted as a whitespace piece.
         if (is_ws(c)) {
             size_t q = p;
             while (q < N && is_ws(cps[q])) q++;
             size_t run_end = q;
-            if (q < N && cps[q - 1] == ' ' && !is_digit(cps[q]) && !is_ws(cps[q]))
-                run_end = q - 1;   // donate the last space to the next token
+            if (q < N && !is_ws(cps[q]) && !is_digit(cps[q])) {
+                const int last = cps[q - 1];
+                const bool donate = is_letter(cps[q]) ? (last != '\r' && last != '\n') : (last == ' ');
+                if (donate) run_end = q - 1;
+            }
             if (run_end > p) piece(p, run_end);
             p = run_end;
             if (p == q) continue;
@@ -294,7 +403,10 @@ std::vector<int64_t> Tokenizer::encode_ordinary(const std::string& text) const {
     return ids;
 }
 
-std::vector<int64_t> Tokenizer::encode(const std::string& text) const {
+std::string Tokenizer::normalize(const std::string& text) const { return nfc(text); }
+
+std::vector<int64_t> Tokenizer::encode(const std::string& raw) const {
+    const std::string text = nfc(raw);   // tokenizer.json normalizer: NFC
     // Split around special-token literals (longest-first), which map directly.
     std::vector<int64_t> ids;
     size_t pos = 0;

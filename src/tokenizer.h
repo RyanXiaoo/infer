@@ -22,7 +22,8 @@ class Tokenizer {
 public:
     void load(const std::string& tokenizer_json_path);
 
-    std::vector<int64_t> encode(const std::string& text) const;
+    std::string normalize(const std::string& text) const;          // NFC, as tokenizer.json specifies
+    std::vector<int64_t> encode(const std::string& text) const;   // normalize, then split + merge
     std::string decode(const std::vector<int64_t>& ids) const;
 
     // Qwen chat turn: system + user, ending with the assistant generation prompt.

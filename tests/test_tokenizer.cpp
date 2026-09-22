@@ -45,6 +45,31 @@ int main() {
         }
     }
 
+    // Adversarial corpus (Stage 9): exact-match rate per category. Every
+    // category must match HF exactly now that the pre-tokenizer uses the full
+    // Unicode letter/number/space classes; round-trip must always hold.
+    if (tests.contains("adversarial")) {
+        int total = 0, matched = 0;
+        for (auto it = tests["adversarial"].begin(); it != tests["adversarial"].end(); ++it) {
+            int n = 0, ok = 0;
+            for (const auto& c : it.value()) {
+                std::string text = c["text"].get<std::string>();
+                std::vector<int64_t> want = c["ids"].get<std::vector<int64_t>>();
+                std::vector<int64_t> got = tok.encode(text);
+                n++;
+                if (got == want) ok++;
+                else show(("encode[" + it.key() + "]").c_str(), text, got, want);
+                // Round-trip recovers the NFC form (HF does the same: the
+                // normalizer runs before tokenization).
+                if (tok.decode(got) != tok.normalize(text)) { std::printf("FAIL round-trip [%s]: %s\n", it.key().c_str(), text.c_str()); failures++; }
+            }
+            std::printf("adversarial %-16s %d/%d exact\n", it.key().c_str(), ok, n);
+            total += n; matched += ok;
+            failures += n - ok;
+        }
+        std::printf("adversarial total: %d/%d exact\n", matched, total);
+    }
+
     // Chat template.
     for (const auto& c : tests["chats"]) {
         std::vector<int64_t> want = c["ids"].get<std::vector<int64_t>>();
