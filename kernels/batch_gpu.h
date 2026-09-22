@@ -31,8 +31,13 @@ public:
     // kv_budget_bytes = 0 -> enough blocks for every slot to reach max_seq
     // (the Stage 6 reservation). Otherwise the pool holds budget / bytes_per_block
     // blocks and the scheduler preempts when they run out.
+    // use_graphs: capture the step's kernel sequence once per batch width and
+    // replay it with one launch (Stage 8). Only for gemm=mine.
+    // attn_split: flash-decoding attention (positions split across blocks with
+    // online-softmax partials) instead of one block per (row, head).
     GpuBatch(GpuModel& m, int n_slots, int64_t max_seq, GemmPath gemm = GemmPath::kMine,
-             int64_t kv_budget_bytes = 0, bool prefix_cache = true);
+             int64_t kv_budget_bytes = 0, bool prefix_cache = true, bool use_graphs = false,
+             bool attn_split = true);
     ~GpuBatch() override;
     GpuBatch(const GpuBatch&) = delete;
     GpuBatch& operator=(const GpuBatch&) = delete;
@@ -49,6 +54,7 @@ public:
     int64_t position(int slot) const;       // tokens in the slot's cache
     int64_t bytes_per_block() const;        // K + V, all layers
     int64_t last_prefill_reused() const;    // positions served by the prefix cache
+    int graphs_captured() const;            // distinct batch widths captured so far
     static constexpr int kMaxRows = 32;
 
     struct Impl;

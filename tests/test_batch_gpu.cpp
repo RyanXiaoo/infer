@@ -58,7 +58,8 @@ int main() {
 
         // (a) all prompts in one batch, lockstep.
         {
-            llm::GpuBatch batch(gpu, n_prompts, kMaxSeq, gemm);
+            for (bool split : {false, true}) {
+            llm::GpuBatch batch(gpu, n_prompts, kMaxSeq, gemm, 0, true, false, split);
             std::vector<std::vector<int64_t>> out(n_prompts);
             std::vector<llm::StepRow> rows;
             for (int s = 0; s < n_prompts; s++) {
@@ -72,10 +73,11 @@ int main() {
             for (int s = 0; s < n_prompts; s++) {
                 if (out[s] != ref[s]) {
                     failures++;
-                    std::printf("FAIL %s lockstep prompt%d: batched stream differs\n", gname.c_str(), s);
+                    std::printf("FAIL %s lockstep attn=%s prompt%d: batched stream differs\n", gname.c_str(), split ? "split" : "par", s);
                 } else {
-                    std::printf("%s lockstep prompt%d: identical (%d tokens)\n", gname.c_str(), s, N);
+                    std::printf("%s lockstep attn=%s prompt%d: identical (%d tokens)\n", gname.c_str(), split ? "split" : "par", s, N);
                 }
+            }
             }
         }
 
@@ -108,6 +110,33 @@ int main() {
             std::printf("%s staggered: %lld scheduler steps, %zu events\n", gname.c_str(),
                         (long long)sch.steps(), sch.events().size());
         }
+    }
+
+    // (d) Stage 8: the same lockstep + staggered runs with CUDA graphs must
+    // give the same tokens (graphs replay the identical kernel sequence).
+    {
+        const llm::GemmPath gemm = llm::GemmPath::kMine;
+        std::vector<std::vector<int64_t>> ref;
+        for (const auto& p : prompts)
+            ref.push_back(llm::greedy_decode_cached_gpu(gpu, p, N, kMaxSeq, gemm));
+        llm::GpuBatch batch(gpu, 2, kMaxSeq, gemm, 0, true, /*use_graphs=*/true);
+        llm::SchedulerConfig cfg;
+        cfg.eos_id = -1;
+        llm::Scheduler sch(batch, cfg);
+        for (int s = 0; s < n_prompts; s++) {
+            llm::Request r; r.id = s; r.prompt = prompts[s]; r.max_new = N - (s % 3) * 5;
+            sch.submit(r);
+        }
+        sch.run_until_idle();
+        std::map<int64_t, std::vector<int64_t>> got;
+        for (const auto& c : sch.completed()) got[c.id] = c.tokens;
+        for (int s = 0; s < n_prompts; s++) {
+            std::vector<int64_t> want(ref[s].begin(), ref[s].begin() + (N - (s % 3) * 5));
+            if (got[s] != want) { failures++; std::printf("FAIL graphs prompt%d: stream differs\n", s); }
+        }
+        std::printf("graphs: %d batch widths captured, %lld steps, tokens %s\n",
+                    batch.graphs_captured(), (long long)sch.steps(),
+                    failures ? "DIFFER" : "identical");
     }
 
     // (c) paged-specific: tiny budget -> preemption; shared prefix -> COW.
@@ -176,6 +205,24 @@ int main() {
             std::printf("shared prefix: %lld positions served from the prefix cache across %d prompts\n",
                         (long long)reused_total, n_prompts);
             if (reused_total < 16 * (n_prompts - 1)) { failures++; std::printf("FAIL: prefix cache unused\n"); }
+        }
+    }
+
+    // (e) Stage 8: a long prompt (300 tokens) runs through the tiled-GEMM prefill
+    // path (chunks of 256 rows, logits for the last row) and must match the
+    // single-sequence session; with graphs on as well.
+    {
+        const llm::GemmPath gemm = llm::GemmPath::kMine;
+        std::vector<int64_t> longp;
+        while (longp.size() < 300) longp.insert(longp.end(), prompts[3].begin(), prompts[3].end());
+        longp.resize(300);
+        const std::vector<int64_t> ref = llm::greedy_decode_cached_gpu(gpu, longp, 16, 400, gemm);
+        for (bool graphs : {false, true}) {
+            llm::GpuBatch batch(gpu, 1, 400, gemm, 0, false, graphs, /*attn_split=*/true);
+            std::vector<int64_t> out{batch.prefill(0, longp)};
+            for (int t = 1; t < 16; t++) out.push_back(batch.step({{0, out.back()}})[0]);
+            if (out != ref) { failures++; std::printf("FAIL long prompt (graphs %d): stream differs\n", int(graphs)); }
+            else std::printf("long prompt 300 tokens (graphs %s): identical (16 tokens)\n", graphs ? "on" : "off");
         }
     }
 

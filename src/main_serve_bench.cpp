@@ -19,6 +19,11 @@
 //   prefix=0        shared prompt prefix length prepended to every request
 //   prefix_cache=1  reuse the shared prefix's KV blocks across requests
 //   modes=both|continuous|static
+//   graphs=0|1      capture the batched step into a CUDA graph per batch width (gemm=mine)
+//   attn=split|par  flash-decoding (split positions across blocks) or one block per (row, head)
+//   events=<path>   write the LAST configuration's scheduler event log (JSON lines)
+//                   for viz/index.html (default: bench/events_<model>_<gemm>_slots<N>.jsonl
+//                   for the largest continuous run)
 // Writes bench/stage6_serve_<model>_<gemm>_<timestamp>.json.
 
 #include "../kernels/batch_gpu.h"
@@ -83,6 +88,9 @@ int main(int argc, char** argv) {
     const int prefix_len = std::atoi(get("prefix", "0").c_str());
     const bool prefix_cache = get("prefix_cache", "1") != "0";
     const std::string modes = get("modes", "both");
+    const std::string events_path = get("events", "");
+    const bool graphs = get("graphs", "0") == "1";
+    const bool attn_split = get("attn", "split") != "par";
     const llm::GemmPath gemm = llm::gemm_path_from(gemm_s);
 
     llm::Model model;
@@ -113,10 +121,11 @@ int main(int argc, char** argv) {
         requests.push_back(r);
     }
     std::printf("model %s gemm=%s: %d requests, %lld tokens to generate, max_seq %lld, "
-                "budget %s, prefix %d (cache %s)\n",
+                "budget %s, prefix %d (cache %s), graphs %s, attn %s\n",
                 llm::model_name().c_str(), gemm_s.c_str(), n_requests, (long long)total_tokens,
                 (long long)max_seq, budget ? (std::to_string(budget >> 20) + " MB").c_str() : "reserve",
-                prefix_len, prefix_cache ? "on" : "off");
+                prefix_len, prefix_cache ? "on" : "off", graphs ? "on" : "off",
+                attn_split ? "split" : "par");
     std::printf("%5s %10s %9s %8s %10s %9s %9s %8s %6s %7s %7s %7s\n", "slots", "mode", "tok/s",
                 "step ms", "tok lat ms", "req p50", "req p95", "ttft p50", "steps", "blocks",
                 "peak", "preempt");
@@ -126,7 +135,7 @@ int main(int argc, char** argv) {
         for (bool continuous : {true, false}) {
             if (modes == "continuous" && !continuous) continue;
             if (modes == "static" && continuous) continue;
-            llm::GpuBatch batch(gpu, slots, max_seq, gemm, budget, prefix_cache);
+            llm::GpuBatch batch(gpu, slots, max_seq, gemm, budget, prefix_cache, graphs, attn_split);
             // Warm-up: one short request so first-launch costs stay out of the timing.
             { llm::Request w = requests[0]; w.max_new = 4; llm::SchedulerConfig c; llm::Scheduler s(batch, c); s.submit(w); s.run_until_idle(); }
             llm::SchedulerConfig cfg;
@@ -160,9 +169,10 @@ int main(int argc, char** argv) {
                         continuous ? "continuous" : "static", row.tok_s, row.step_ms, row.token_lat_ms,
                         row.req_p50, row.req_p95, row.ttft_p50, (long long)row.steps, row.blocks_total,
                         row.blocks_peak, row.preemptions);
-            if (continuous && slots == slot_list.back())
-                sch.events().write_jsonl(root + "/bench/events_" + llm::model_name() + "_" + gemm_s +
-                                         "_slots" + std::to_string(slots) + ".jsonl");
+            if (slots == slot_list.back() && (continuous || modes == "static"))
+                sch.events().write_jsonl(!events_path.empty() ? events_path
+                    : root + "/bench/events_" + llm::model_name() + "_" + gemm_s + "_slots" +
+                          std::to_string(slots) + ".jsonl");
         }
     }
 
@@ -177,7 +187,8 @@ int main(int argc, char** argv) {
       << " \"requests\": " << n_requests << ", \"tokens_generated\": " << total_tokens
       << ", \"max_new_base\": " << max_new_base << ", \"max_seq\": " << max_seq
       << ", \"budget_mb\": " << (budget >> 20) << ", \"bytes_per_block\": " << llm::GpuBatch(gpu, 1, 16, gemm).bytes_per_block()
-      << ", \"prefix\": " << prefix_len << ", \"prefix_cache\": " << (prefix_cache ? "true" : "false") << ",\n"
+      << ", \"prefix\": " << prefix_len << ", \"prefix_cache\": " << (prefix_cache ? "true" : "false")
+      << ", \"graphs\": " << (graphs ? "true" : "false") << ", \"attn\": \"" << (attn_split ? "split" : "par") << "\",\n"
       << " \"prompts\": \"golden prompts 0-4 cycled, all submitted at t=0, eos disabled\",\n \"rows\": [\n";
     for (size_t i = 0; i < rows.size(); i++) {
         const Row& r = rows[i];
