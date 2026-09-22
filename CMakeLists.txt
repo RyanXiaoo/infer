@@ -131,6 +131,17 @@ if(CMAKE_CUDA_COMPILER)
   add_test(NAME ops_gpu COMMAND test_ops_gpu)
   add_test(NAME ops_gpu_selftest COMMAND test_ops_gpu --selftest)
 
+  # Stage 6: batched decode == single-sequence decode, lockstep and staggered.
+  add_executable(test_batch_gpu tests/test_batch_gpu.cpp)
+  target_link_libraries(test_batch_gpu PRIVATE engine_gpu)
+  target_compile_definitions(test_batch_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+  add_test(NAME batch_gpu COMMAND test_batch_gpu)
+
+  # Stage 6: throughput / latency sweep over batch size, continuous vs static.
+  add_executable(main_serve_bench src/main_serve_bench.cpp)
+  target_link_libraries(main_serve_bench PRIVATE engine_gpu)
+  target_compile_definitions(main_serve_bench PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+
   # KV cache test gains its GPU half in CUDA builds.
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)

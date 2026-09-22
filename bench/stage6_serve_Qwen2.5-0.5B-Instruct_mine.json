@@ -1,0 +1,20 @@
+{
+ "what": "Stage 6 serving sweep: throughput vs latency over batch size, continuous vs static batching",
+ "model": "Qwen2.5-0.5B-Instruct", "gemm": "mine",
+ "requests": 64, "tokens_generated": 2859, "max_new_base": 48, "max_seq": 192,
+ "prompts": "golden prompts 0-4 cycled, all submitted at t=0, eos disabled",
+ "rows": [
+  {"slots": 1, "mode": "continuous", "tok_s": 223.204, "wall_ms": 12808.9, "step_ms": 4.58115, "token_latency_ms": 4.46058, "request_p50_ms": 6201.46, "request_p95_ms": 12198.3, "ttft_p50_ms": 5999.29, "steps": 2796},
+  {"slots": 1, "mode": "static", "tok_s": 203.279, "wall_ms": 14064.4, "step_ms": 5.03019, "token_latency_ms": 4.816, "request_p50_ms": 7084.47, "request_p95_ms": 13410.9, "ttft_p50_ms": 6781.69, "steps": 2796},
+  {"slots": 2, "mode": "continuous", "tok_s": 375.083, "wall_ms": 7622.32, "step_ms": 5.44063, "token_latency_ms": 5.29959, "request_p50_ms": 4310.6, "request_p95_ms": 7330.12, "ttft_p50_ms": 4068.27, "steps": 1401},
+  {"slots": 2, "mode": "static", "tok_s": 413.96, "wall_ms": 6906.47, "step_ms": 4.32195, "token_latency_ms": 4.28655, "request_p50_ms": 3584.35, "request_p95_ms": 6634.55, "ttft_p50_ms": 3354.37, "steps": 1598},
+  {"slots": 4, "mode": "continuous", "tok_s": 691.653, "wall_ms": 4133.58, "step_ms": 5.7651, "token_latency_ms": 5.64629, "request_p50_ms": 2092.82, "request_p95_ms": 4028.96, "ttft_p50_ms": 1820.42, "steps": 717},
+  {"slots": 4, "mode": "static", "tok_s": 543.196, "wall_ms": 5263.29, "step_ms": 5.62317, "token_latency_ms": 5.54863, "request_p50_ms": 2801.38, "request_p95_ms": 5082.9, "ttft_p50_ms": 2673.37, "steps": 936},
+  {"slots": 8, "mode": "continuous", "tok_s": 1105.42, "wall_ms": 2586.34, "step_ms": 6.71778, "token_latency_ms": 6.70932, "request_p50_ms": 1370.82, "request_p95_ms": 2421.25, "ttft_p50_ms": 1084.57, "steps": 385},
+  {"slots": 8, "mode": "static", "tok_s": 867.455, "wall_ms": 3295.85, "step_ms": 6.326, "token_latency_ms": 6.46049, "request_p50_ms": 1689.03, "request_p95_ms": 3156.09, "ttft_p50_ms": 1512.96, "steps": 521},
+  {"slots": 16, "mode": "continuous", "tok_s": 1325.78, "wall_ms": 2156.47, "step_ms": 10.172, "token_latency_ms": 10.8398, "request_p50_ms": 1321.39, "request_p95_ms": 2067.64, "ttft_p50_ms": 786.907, "steps": 212},
+  {"slots": 16, "mode": "static", "tok_s": 1103.11, "wall_ms": 2591.77, "step_ms": 9.93015, "token_latency_ms": 10.1011, "request_p50_ms": 1619.22, "request_p95_ms": 2562.09, "ttft_p50_ms": 1323.21, "steps": 261},
+  {"slots": 32, "mode": "continuous", "tok_s": 1342.82, "wall_ms": 2129.11, "step_ms": 16.8977, "token_latency_ms": 20.1347, "request_p50_ms": 1564.56, "request_p95_ms": 2071.26, "ttft_p50_ms": 616.305, "steps": 126},
+  {"slots": 32, "mode": "static", "tok_s": 1265.44, "wall_ms": 2259.3, "step_ms": 17.2466, "token_latency_ms": 19.1092, "request_p50_ms": 1750.34, "request_p95_ms": 2259.3, "ttft_p50_ms": 1120.67, "steps": 131}
+ ]
+}
