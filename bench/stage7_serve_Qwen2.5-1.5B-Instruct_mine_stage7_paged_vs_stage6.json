@@ -1,0 +1,14 @@
+{
+ "what": "Stage 6 serving sweep: throughput vs latency over batch size, continuous vs static batching",
+ "model": "Qwen2.5-1.5B-Instruct", "gemm": "mine",
+ "requests": 64, "tokens_generated": 2859, "max_new_base": 48, "max_seq": 192, "budget_mb": 0, "bytes_per_block": 917504, "prefix": 0, "prefix_cache": true,
+ "prompts": "golden prompts 0-4 cycled, all submitted at t=0, eos disabled",
+ "rows": [
+  {"slots": 1, "mode": "continuous", "tok_s": 146.153, "wall_ms": 19561.7, "step_ms": 6.99633, "token_latency_ms": 6.75744, "request_p50_ms": 10139, "request_p95_ms": 18481.6, "ttft_p50_ms": 9779.85, "steps": 2796, "blocks_total": 12, "blocks_peak": 5, "preemptions": 0},
+  {"slots": 1, "mode": "static", "tok_s": 140.984, "wall_ms": 20278.9, "step_ms": 7.25281, "token_latency_ms": 6.99207, "request_p50_ms": 11082.2, "request_p95_ms": 19239.1, "ttft_p50_ms": 10772.1, "steps": 2796, "blocks_total": 12, "blocks_peak": 5, "preemptions": 0},
+  {"slots": 4, "mode": "continuous", "tok_s": 412.309, "wall_ms": 6934.13, "step_ms": 9.67103, "token_latency_ms": 9.37735, "request_p50_ms": 3626, "request_p95_ms": 6692.95, "ttft_p50_ms": 3157.33, "steps": 717, "blocks_total": 48, "blocks_peak": 14, "preemptions": 0},
+  {"slots": 4, "mode": "static", "tok_s": 331.404, "wall_ms": 8626.94, "step_ms": 9.21682, "token_latency_ms": 9.04526, "request_p50_ms": 4381.09, "request_p95_ms": 8284.17, "ttft_p50_ms": 4147.85, "steps": 936, "blocks_total": 48, "blocks_peak": 16, "preemptions": 0},
+  {"slots": 16, "mode": "continuous", "tok_s": 639.212, "wall_ms": 4472.69, "step_ms": 21.0976, "token_latency_ms": 22.7682, "request_p50_ms": 2707.4, "request_p95_ms": 4317.21, "ttft_p50_ms": 1665.35, "steps": 212, "blocks_total": 192, "blocks_peak": 46, "preemptions": 0},
+  {"slots": 16, "mode": "static", "tok_s": 573.479, "wall_ms": 4985.36, "step_ms": 19.101, "token_latency_ms": 20.689, "request_p50_ms": 3069.49, "request_p95_ms": 4912.5, "ttft_p50_ms": 2443.22, "steps": 261, "blocks_total": 192, "blocks_peak": 42, "preemptions": 0}
+ ]
+}

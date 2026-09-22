@@ -1,0 +1,9 @@
+{
+ "what": "Stage 6 serving sweep: throughput vs latency over batch size, continuous vs static batching",
+ "model": "Qwen2.5-1.5B-Instruct", "gemm": "mine",
+ "requests": 64, "tokens_generated": 2859, "max_new_base": 48, "max_seq": 256, "budget_mb": 0, "bytes_per_block": 917504, "prefix": 64, "prefix_cache": false,
+ "prompts": "golden prompts 0-4 cycled, all submitted at t=0, eos disabled",
+ "rows": [
+  {"slots": 16, "mode": "continuous", "tok_s": 285.219, "wall_ms": 10023.9, "step_ms": 47.2824, "token_latency_ms": 48.4655, "request_p50_ms": 6876.56, "request_p95_ms": 9867.46, "ttft_p50_ms": 4532.4, "steps": 212, "blocks_total": 256, "blocks_peak": 110, "preemptions": 0}
+ ]
+}
