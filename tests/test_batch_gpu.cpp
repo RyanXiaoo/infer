@@ -7,6 +7,9 @@
 //     requests, so prompts join and leave a running batch at different steps,
 //     must give the same per-prompt streams. Batch composition must not leak
 //     into any row's result.
+// (c) Stage 7: the same requests under a KV budget too small to hold them all
+//     (forces preemption + recompute) and with a shared 32-token prefix
+//     (prefix cache + copy-on-write) must still give the same streams.
 // Both on gemm=mine (batched GEMV) and gemm=cublas (T = B Sgemm).
 
 #include "../kernels/batch_gpu.h"
@@ -104,6 +107,75 @@ int main() {
             }
             std::printf("%s staggered: %lld scheduler steps, %zu events\n", gname.c_str(),
                         (long long)sch.steps(), sch.events().size());
+        }
+    }
+
+    // (c) paged-specific: tiny budget -> preemption; shared prefix -> COW.
+    {
+        const llm::GemmPath gemm = llm::GemmPath::kMine;
+        std::vector<std::vector<int64_t>> ref;
+        for (const auto& p : prompts)
+            ref.push_back(llm::greedy_decode_cached_gpu(gpu, p, N, kMaxSeq, gemm));
+
+        // Budget: 3 blocks. Two prompts are admitted (1 block each, admission
+        // needs 2 free), then growth past position 16 needs a third block for
+        // each: the second one cannot get it and is preempted, later resumed.
+        {
+            llm::GpuBatch probe(gpu, 1, kMaxSeq, gemm);
+            const int64_t budget = 3 * probe.bytes_per_block();
+            llm::GpuBatch batch(gpu, 2, kMaxSeq, gemm, budget);
+            llm::SchedulerConfig cfg;
+            cfg.eos_id = -1;
+            llm::Scheduler sch(batch, cfg);
+            for (int s = 0; s < n_prompts; s++) {
+                llm::Request r; r.id = s; r.prompt = prompts[s]; r.max_new = N;
+                sch.submit(r);
+            }
+            sch.run_until_idle();
+            std::map<int64_t, std::vector<int64_t>> got;
+            for (const auto& c : sch.completed()) got[c.id] = c.tokens;
+            for (int s = 0; s < n_prompts; s++)
+                if (got[s] != ref[s]) { failures++; std::printf("FAIL budget prompt%d: stream differs\n", s); }
+            std::printf("budget %d blocks: %d preemptions, %lld steps, blocks in use after: %d%s\n",
+                        batch.blocks_total(), sch.preemptions(), (long long)sch.steps(),
+                        batch.blocks_in_use(), sch.preemptions() > 0 ? "" : "  <-- expected preemptions");
+            if (sch.preemptions() == 0) failures++;
+            if (batch.blocks_in_use() != 0) { failures++; std::printf("FAIL: blocks leaked\n"); }
+        }
+
+        // Shared prefix: prompt = 32 tokens of prompt3 repeated, then each golden
+        // prompt. The second and later requests must reuse the first's blocks.
+        {
+            std::vector<int64_t> prefix;
+            while (prefix.size() < 32) prefix.insert(prefix.end(), prompts[3].begin(), prompts[3].end());
+            prefix.resize(32);
+            std::vector<std::vector<int64_t>> ps, refs;
+            for (int s = 0; s < n_prompts; s++) {
+                std::vector<int64_t> p = prefix;
+                p.insert(p.end(), prompts[s].begin(), prompts[s].end());
+                ps.push_back(p);
+                refs.push_back(llm::greedy_decode_cached_gpu(gpu, p, N, kMaxSeq, gemm));
+            }
+            llm::GpuBatch batch(gpu, n_prompts, kMaxSeq, gemm, 0, /*prefix_cache=*/true);
+            std::vector<std::vector<int64_t>> out(n_prompts);
+            std::vector<llm::StepRow> rows;
+            int64_t reused_total = 0;
+            for (int s = 0; s < n_prompts; s++) {
+                out[s].push_back(batch.prefill(s, ps[s]));
+                reused_total += batch.last_prefill_reused();
+                rows.push_back({s, out[s].back()});
+            }
+            for (int t = 1; t < N; t++) {
+                std::vector<int64_t> next = batch.step(rows);
+                for (int s = 0; s < n_prompts; s++) { out[s].push_back(next[s]); rows[s].token = next[s]; }
+            }
+            for (int s = 0; s < n_prompts; s++)
+                if (out[s] != refs[s]) { failures++; std::printf("FAIL prefix prompt%d: stream differs\n", s); }
+            // Prompts 1..4 share block 0 (positions 0-15) of prompt 0; block 1 holds
+            // positions 16-31 and is the last full block only when T % 16 == 0.
+            std::printf("shared prefix: %lld positions served from the prefix cache across %d prompts\n",
+                        (long long)reused_total, n_prompts);
+            if (reused_total < 16 * (n_prompts - 1)) { failures++; std::printf("FAIL: prefix cache unused\n"); }
         }
     }
 
