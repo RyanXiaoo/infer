@@ -24,7 +24,8 @@ add_library(engine_core STATIC
   src/forward.cpp
   src/session.cpp
   src/tokenizer.cpp
-  src/sampler.cpp)
+  src/sampler.cpp
+  src/scheduler.cpp)
 target_include_directories(engine_core PUBLIC third_party)
 
 add_executable(test_loader tests/test_loader.cpp)
@@ -98,7 +99,9 @@ if(CMAKE_CUDA_COMPILER)
     kernels/ops/rope.cu
     kernels/ops/attention.cu
     kernels/ops/elementwise.cu
-    kernels/ops/cache.cu)
+    kernels/ops/cache.cu
+    kernels/ops/batch.cu
+    kernels/batch_gpu.cu)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 
   # Stage 5: per-shape decode GEMV microbench (mine vs cuBLAS, GB/s vs achievable).

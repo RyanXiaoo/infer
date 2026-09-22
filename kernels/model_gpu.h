@@ -67,6 +67,7 @@ private:
     friend std::vector<float> forward_gpu(GpuModel&, const std::vector<int64_t>&,
                                           const TapFn*, bool, GemmPath);
     friend class GpuSession;   // shares the device weights + linear dispatch
+    friend class GpuBatch;     // Stage 6 batched decode
 };
 
 // Same contract as llm::forward (src/forward.h), executed on the GPU.
