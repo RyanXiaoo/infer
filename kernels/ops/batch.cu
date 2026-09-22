@@ -1,0 +1,298 @@
+// batch.cu — Stage 6 kernels for the batched decode step: B sequences, one
+// new token each, in one pass. Every kernel here takes per-row arrays on the
+// device (slot, position) because rows belong to different sequences at
+// different lengths.
+//
+// The reason batching pays: decode is bound by reading the weights, and the
+// weights are the same for every sequence. gemv_batched reads each weight row
+// ONCE and multiplies it with all B input vectors, so the weight traffic per
+// token drops by B. Attention does not share (each sequence has its own cache)
+// and stays proportional to B.
+
+#include "ops.cuh"
+
+namespace llm::gpu {
+
+namespace {
+constexpr int kMaxBatch = 32;
+
+// y[b][o] = sum_i W[o][i] * x[b][i] (+ bias[o]) for b < B.
+//
+// v1 (kept for the bench as gemv_batched_v1): one block per output row, each
+// thread B runtime-indexed accumulators. Measured step time grew almost
+// linearly with B: the accumulators spill to local memory, and every weight
+// load is paired with B activation loads through L1, so activation traffic
+// (out * B * in * 4 bytes) dwarfs the weight traffic (out * in * 2) it was
+// meant to amortize.
+//
+// v2: RW output rows per block (one warp each) share one activation chunk
+// staged in shared memory, xs[BT][kChunk]; activation traffic drops by RW.
+// BT is a compile-time batch width (B rounded up to 1,2,4,8,16,32) so the
+// accumulators live in registers. Each warp walks its row over the chunk with
+// interleaved lanes (coalesced weight loads), then reduces each accumulator
+// across the warp with shuffles. Rows of x beyond B are read but not written;
+// the caller keeps its scratch zero-initialised so they are finite.
+constexpr int kChunk = 256;
+constexpr int kRowsPerBlock = 8;
+
+template <int BT>
+__global__ void gemv_batched_kernel(const float* x, const __nv_bfloat16* W,
+                                    const __nv_bfloat16* bias, int B, int64_t in,
+                                    float* y, int64_t out) {
+    __shared__ float xs[BT][kChunk];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int64_t o = int64_t(blockIdx.x) * kRowsPerBlock + warp;
+    const __nv_bfloat16* wr = W + (o < out ? o : 0) * in;
+
+    float acc[BT];
+#pragma unroll
+    for (int b = 0; b < BT; b++) acc[b] = 0.0f;
+
+    for (int64_t c0 = 0; c0 < in; c0 += kChunk) {
+        const int len = int(in - c0 < kChunk ? in - c0 : kChunk);
+        for (int t = threadIdx.x; t < BT * kChunk; t += blockDim.x) {
+            const int b = t / kChunk, j = t % kChunk;
+            xs[b][j] = j < len ? x[int64_t(b) * in + c0 + j] : 0.0f;
+        }
+        __syncthreads();
+        if (o < out) {
+            for (int j = lane; j < len; j += 32) {
+                const float w = __bfloat162float(wr[c0 + j]);
+#pragma unroll
+                for (int b = 0; b < BT; b++) acc[b] += w * xs[b][j];
+            }
+        }
+        __syncthreads();
+    }
+    if (o >= out) return;
+#pragma unroll
+    for (int b = 0; b < BT; b++)
+        for (int off = 16; off > 0; off >>= 1)
+            acc[b] += __shfl_down_sync(0xffffffffu, acc[b], off);
+    if (lane == 0) {
+        const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
+        for (int b = 0; b < B; b++) y[int64_t(b) * out + o] = acc[b] + bv;
+    }
+}
+
+// v1, for the before/after bench.
+__global__ void gemv_batched_v1_kernel(const float* x, const __nv_bfloat16* W,
+                                       const __nv_bfloat16* bias, int B, int64_t in,
+                                       float* y, int64_t out) {
+    extern __shared__ float part[];   // [B][blockDim.x]
+    const int T = blockDim.x, j = threadIdx.x;
+    const int64_t o = blockIdx.x;
+    const __nv_bfloat16* wr = W + o * in;
+    float acc[kMaxBatch];
+    for (int b = 0; b < B; b++) acc[b] = 0.0f;
+    for (int64_t i = j; i < in; i += T) {
+        const float w = __bfloat162float(wr[i]);
+        for (int b = 0; b < B; b++) acc[b] += w * x[b * in + i];
+    }
+    for (int b = 0; b < B; b++) part[b * T + j] = acc[b];
+    __syncthreads();
+    for (int stride = T / 2; stride > 0; stride >>= 1) {
+        if (j < stride)
+            for (int b = 0; b < B; b++) part[b * T + j] += part[b * T + j + stride];
+        __syncthreads();
+    }
+    if (j == 0) {
+        const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
+        for (int b = 0; b < B; b++) y[b * out + o] = part[b * T] + bv;
+    }
+}
+
+// Per row b: rotate q[b] in place at position pos[b], rotate k[b] into slot
+// slot[b]'s cache row pos[b], copy v[b] there. cos/sin tables are [max_seq x hd].
+// One thread per (row, rotation pair), q heads then k heads as in the T=1 kernel.
+__global__ void rope_qk_append_batched_kernel(float* q, const float* k, const float* v,
+                                              const float* cos_tab, const float* sin_tab,
+                                              const int* slot, const int* pos, int B,
+                                              int64_t n_heads, int64_t n_kv, int64_t hd,
+                                              int64_t max_seq, float* k_cache,
+                                              float* v_cache) {
+    const int64_t half = hd / 2, per_row = (n_heads + n_kv) * half;
+    int64_t idx = blockIdx.x * int64_t(blockDim.x) + threadIdx.x;
+    if (idx >= B * per_row) return;
+    const int b = int(idx / per_row);
+    const int64_t r = idx % per_row, j = r % half, h = r / half;
+    const float* c = cos_tab + int64_t(pos[b]) * hd;
+    const float* s = sin_tab + int64_t(pos[b]) * hd;
+    const int64_t kv_dim = n_kv * hd;
+    if (h < n_heads) {
+        float* qv = q + b * n_heads * hd + h * hd;
+        float x1 = qv[j], x2 = qv[half + j];
+        qv[j] = x1 * c[j] - x2 * s[j];
+        qv[half + j] = x2 * c[half + j] + x1 * s[half + j];
+        return;
+    }
+    const int64_t off = (h - n_heads) * hd;
+    const float* kr = k + b * kv_dim;
+    const float* vr = v + b * kv_dim;
+    const int64_t row = (int64_t(slot[b]) * max_seq + pos[b]) * kv_dim;
+    float x1 = kr[off + j], x2 = kr[off + half + j];
+    k_cache[row + off + j] = x1 * c[j] - x2 * s[j];
+    k_cache[row + off + half + j] = x2 * c[half + j] + x1 * s[half + j];
+    v_cache[row + off + j] = vr[off + j];
+    v_cache[row + off + half + j] = vr[off + half + j];
+}
+
+__device__ inline const float* kv_row_slot(const float* cache, int slot, int64_t s,
+                                           int64_t g, int64_t max_seq, int64_t kv_dim,
+                                           int64_t hd) {
+    return cache + (int64_t(slot) * max_seq + s) * kv_dim + g * hd;
+}
+
+// Same three-phase kernel as attention_cached_par_kernel; block (b, h) reads
+// slot[b]'s cache over cache_len = pos[b] + 1 rows. scores: [B x n_heads x max_seq].
+__global__ void attention_cached_batched_kernel(const float* q, const float* k_cache,
+                                                const float* v_cache, float* scores,
+                                                const int* slot, const int* pos,
+                                                int64_t n_heads, int64_t n_kv, int64_t hd,
+                                                int64_t max_seq, int classes, float* ctx) {
+    extern __shared__ float part[];
+    const int Bt = blockDim.x, i = threadIdx.x;
+    const int b = blockIdx.y;
+    const int64_t h = blockIdx.x;
+    const int64_t g = h / (n_heads / n_kv), kv_dim = n_kv * hd;
+    const int64_t cache_len = pos[b] + 1;
+    const int sl = slot[b];
+    const float scale = rsqrtf(float(hd));
+    const float* qr = q + b * n_heads * hd + h * hd;
+    float* sc = scores + (int64_t(b) * n_heads + h) * max_seq;
+
+    float m = -INFINITY;
+    for (int64_t s = i; s < cache_len; s += Bt) {
+        const float* kr = kv_row_slot(k_cache, sl, s, g, max_seq, kv_dim, hd);
+        float acc = 0.0f;
+        for (int64_t d = 0; d < hd; d++) acc += qr[d] * kr[d];
+        sc[s] = acc * scale;
+        if (sc[s] > m) m = sc[s];
+    }
+    part[i] = m;
+    __syncthreads();
+    for (int stride = Bt / 2; stride > 0; stride >>= 1) {
+        if (i < stride && part[i + stride] > part[i]) part[i] = part[i + stride];
+        __syncthreads();
+    }
+    const float maxs = part[0];
+    __syncthreads();
+
+    float sum = 0.0f;
+    for (int64_t s = i; s < cache_len; s += Bt) sum += (sc[s] = expf(sc[s] - maxs));
+    part[i] = sum;
+    __syncthreads();
+    for (int stride = Bt / 2; stride > 0; stride >>= 1) {
+        if (i < stride) part[i] += part[i + stride];
+        __syncthreads();
+    }
+    const float inv_denom = 1.0f / part[0];
+    __syncthreads();
+
+    float* out = ctx + b * n_heads * hd + h * hd;
+    if (hd > Bt) {
+        for (int64_t d = i; d < hd; d += Bt) {
+            float acc = 0.0f;
+            for (int64_t s = 0; s < cache_len; s++)
+                acc += sc[s] * kv_row_slot(v_cache, sl, s, g, max_seq, kv_dim, hd)[d];
+            out[d] = acc * inv_denom;
+        }
+        return;
+    }
+    const int c = i / int(hd), d = i % int(hd);
+    float acc = 0.0f;
+    if (c < classes)
+        for (int64_t s = c; s < cache_len; s += classes)
+            acc += sc[s] * kv_row_slot(v_cache, sl, s, g, max_seq, kv_dim, hd)[d];
+    part[i] = acc;
+    __syncthreads();
+    for (int stride = classes / 2; stride > 0; stride >>= 1) {
+        if (c < stride) part[i] += part[i + stride * int(hd)];
+        __syncthreads();
+    }
+    if (c == 0) out[d] = part[i] * inv_denom;
+}
+
+// argmax over each row of logits [B x V]: one block per row, strided scan +
+// block reduce on (value, index); ties -> lowest index, matching the CPU loop.
+__global__ void argmax_rows_kernel(const float* logits, int64_t V, int64_t* out) {
+    extern __shared__ float sv[];
+    int64_t* si = reinterpret_cast<int64_t*>(sv + blockDim.x);
+    const float* row = logits + blockIdx.x * V;
+    float best = -INFINITY;
+    int64_t besti = 0;
+    for (int64_t v = threadIdx.x; v < V; v += blockDim.x)
+        if (row[v] > best) { best = row[v]; besti = v; }
+    sv[threadIdx.x] = best;
+    si[threadIdx.x] = besti;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            const float ov = sv[threadIdx.x + stride];
+            const int64_t oi = si[threadIdx.x + stride];
+            if (ov > sv[threadIdx.x] || (ov == sv[threadIdx.x] && oi < si[threadIdx.x])) {
+                sv[threadIdx.x] = ov;
+                si[threadIdx.x] = oi;
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[blockIdx.x] = si[0];
+}
+
+int pow2_floor_b(int64_t v) {
+    int p = 1;
+    while (int64_t(p) * 2 <= v) p *= 2;
+    return p;
+}
+} // namespace
+
+void launch_gemv_batched(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
+                         int B, int64_t in, int64_t out, float* y) {
+    const unsigned grid = unsigned((out + kRowsPerBlock - 1) / kRowsPerBlock);
+    const int threads = kRowsPerBlock * 32;
+#define LAUNCH(BT) gemv_batched_kernel<BT><<<grid, threads>>>(x, W, bias, B, in, y, out)
+    if (B <= 1) LAUNCH(1);
+    else if (B <= 2) LAUNCH(2);
+    else if (B <= 4) LAUNCH(4);
+    else if (B <= 8) LAUNCH(8);
+    else if (B <= 16) LAUNCH(16);
+    else LAUNCH(32);
+#undef LAUNCH
+}
+
+void launch_gemv_batched_v1(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
+                            int B, int64_t in, int64_t out, float* y) {
+    const int threads = 64;
+    gemv_batched_v1_kernel<<<out, threads, size_t(B) * threads * sizeof(float)>>>(
+        x, W, bias, B, in, y, out);
+}
+
+void launch_rope_qk_append_batched(float* q, const float* k, const float* v,
+                                   const float* cos_tab, const float* sin_tab,
+                                   const int* slot, const int* pos, int B, int64_t n_heads,
+                                   int64_t n_kv, int64_t hd, int64_t max_seq, float* k_cache,
+                                   float* v_cache) {
+    const int64_t n = int64_t(B) * (n_heads + n_kv) * (hd / 2);
+    rope_qk_append_batched_kernel<<<(n + 255) / 256, 256>>>(
+        q, k, v, cos_tab, sin_tab, slot, pos, B, n_heads, n_kv, hd, max_seq, k_cache, v_cache);
+}
+
+void launch_attention_cached_batched(const float* q, const float* k_cache,
+                                     const float* v_cache, float* scores, const int* slot,
+                                     const int* pos, int B, int64_t max_cache_len,
+                                     int64_t n_heads, int64_t n_kv, int64_t hd,
+                                     int64_t max_seq, float* ctx, int threads) {
+    if (threads <= 0) threads = attention_par_threads(hd, max_cache_len);
+    const int classes = hd > threads ? 1 : pow2_floor_b(threads / hd);
+    const dim3 grid(unsigned(n_heads), unsigned(B), 1u);
+    attention_cached_batched_kernel<<<grid, threads, threads * sizeof(float)>>>(
+        q, k_cache, v_cache, scores, slot, pos, n_heads, n_kv, hd, max_seq, classes, ctx);
+}
+
+void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out) {
+    const int threads = 256;
+    argmax_rows_kernel<<<B, threads, threads * (sizeof(float) + sizeof(int64_t))>>>(logits, V, out);
+}
+
+} // namespace llm::gpu

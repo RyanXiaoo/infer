@@ -215,6 +215,19 @@ void launch_attention_cached(const float* q, const float* k_cache,
                                                          n_heads, n_kv, hd, ctx);
 }
 
+// Phases 1-2 want ~one position per thread; phase 3 wants threads >= hd so
+// each output dim has its own thread, and more than that to split positions.
+// From attn_bench: 256 vs 1024 threads is a wash up to a few hundred positions;
+// past that, and at hd=128 (where 256 threads leave only two position classes
+// in phase 3), the larger block wins. Callers that must agree with each other
+// (single-sequence session vs batched engine) pass max_seq, not cache_len, so
+// they pick the same reduction tree and produce bit-identical results.
+int attention_par_threads(int64_t hd, int64_t len) {
+    int threads = 256;
+    while (threads < 1024 && (threads < 8 * hd || threads * 2 < len)) threads *= 2;
+    return threads;
+}
+
 void launch_attention_cached_stored(const float* q, const float* k_cache,
                                     const float* v_cache, float* scores,
                                     int64_t cache_len, int64_t n_heads, int64_t n_kv,
@@ -227,15 +240,7 @@ void launch_attention_cached_par(const float* q, const float* k_cache,
                                  const float* v_cache, float* scores, int64_t cache_len,
                                  int64_t n_heads, int64_t n_kv, int64_t hd, float* ctx,
                                  int threads) {
-    // Phases 1-2 want ~one position per thread; phase 3 wants threads >= hd so
-    // each output dim has its own thread, and more than that to split positions.
-    if (threads <= 0) {
-        // From attn_bench: 256 vs 1024 threads is a wash up to a few hundred
-        // positions; past that, and at hd=128 (where 256 threads leave only two
-        // position classes in phase 3), the larger block wins.
-        threads = 256;
-        while (threads < 1024 && (threads < 8 * hd || threads * 2 < cache_len)) threads *= 2;
-    }
+    if (threads <= 0) threads = attention_par_threads(hd, cache_len);
     const int classes = hd > threads ? 1 : pow2_floor(threads / hd);
     attention_cached_par_kernel<<<n_heads, threads, threads * sizeof(float)>>>(
         q, k_cache, v_cache, scores, cache_len, n_heads, n_kv, hd, classes, ctx);

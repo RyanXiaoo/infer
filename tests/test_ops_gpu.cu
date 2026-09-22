@@ -34,6 +34,7 @@
 #include "../kernels/ops/ops.cuh"
 #include "../src/f16.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -381,6 +382,161 @@ void test_rope_qk_append(std::mt19937& rng, int64_t n_heads, int64_t n_kv, int64
     report(vc_ref.download() == vc_fus.download(), what + " v cache", 1, 0, "(v cache differs)");
 }
 
+// ---------------------------------------------------------- batched step
+//
+// The Stage 6 batched kernels claim per-row results bit-identical to the
+// single-sequence kernels (same thread assignment and summation order), so they
+// are held to exact equality, row by row, against those kernels.
+void test_gemv_batched(std::mt19937& rng, int B, int64_t in, int64_t out, bool bias) {
+    std::vector<float> w_f, b_f;
+    std::vector<uint16_t> w_bits = rand_bf16(rng, size_t(out) * in, 0.05f, w_f);
+    std::vector<uint16_t> b_bits = rand_bf16(rng, size_t(out), 0.5f, b_f);
+    std::vector<float> x = randn(rng, size_t(B) * in);
+    Dev<uint16_t> dW(w_bits), db(b_bits);
+    x.resize(size_t(32) * in, 0.0f);   // the v2 kernel reads all 32 scratch rows
+    Dev<float> dx(x);
+    Dev<float> y_ref(std::vector<float>(size_t(B) * out, 0.0f));
+    const auto* W = reinterpret_cast<const __nv_bfloat16*>(dW.p);
+    const auto* bb = bias ? reinterpret_cast<const __nv_bfloat16*>(db.p) : nullptr;
+    for (int b = 0; b < B; b++)
+        llm::gpu::launch_gemv_rowpar(dx.p + b * in, W, bb, 1, in, out, y_ref.p + b * out);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> a = y_ref.download();
+    // Conditioning per output, for the tolerance check on v2.
+    std::vector<double> cond(size_t(B) * out, 0.0);
+    for (int b = 0; b < B; b++)
+        for (int64_t o = 0; o < out; o++) {
+            double mag = bias ? std::abs(double(b_f[o])) : 0.0;
+            for (int64_t i = 0; i < in; i++) mag += std::abs(double(w_f[o * in + i]) * double(x[b * in + i]));
+            cond[b * out + o] = mag > 0 ? mag : 1.0;
+        }
+    const std::string base = "batched/gemv B=" + std::to_string(B) + " " + std::to_string(out) +
+                             "x" + std::to_string(in) + (bias ? " +bias" : "");
+    {   // v1: same thread assignment and summation order as rowpar -> exact.
+        Dev<float> y1(std::vector<float>(size_t(B) * out + kCanary, kCanaryValue));
+        llm::gpu::launch_gemv_batched_v1(dx.p, W, bb, B, in, out, y1.p);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::vector<float> c = y1.download();
+        report(std::equal(a.begin(), a.end(), c.begin()), base + " v1", 1, 0, "(differs from rowpar)");
+        report(canary_intact(c, a.size()), base + " v1 canary", 1, 0, "(wrote past y)");
+    }
+    {   // v2: chunked + shuffle reduction -> a different fp32 order; tolerance.
+        Dev<float> y2(std::vector<float>(size_t(B) * out + kCanary, kCanaryValue));
+        llm::gpu::launch_gemv_batched(dx.p, W, bb, B, in, out, y2.p);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::vector<float> c = y2.download();
+        double worst = 0.0;
+        for (size_t j = 0; j < a.size(); j++)
+            worst = std::max(worst, std::abs(double(c[j]) - double(a[j])) / cond[j]);
+        report(worst <= kGemvTol, base + " v2", worst, kGemvTol);
+        report(canary_intact(c, a.size()), base + " v2 canary", 1, 0, "(wrote past y)");
+    }
+}
+
+void test_attention_batched(std::mt19937& rng, int n_slots, int B, int64_t n_heads,
+                            int64_t n_kv, int64_t hd, int64_t max_seq) {
+    const int64_t kv_dim = n_kv * hd;
+    // Random per-row slot (distinct) and position; caches filled with random data
+    // everywhere so an off-by-one in slot or length reads a wrong (finite) row.
+    std::vector<int> slot(B), pos(B);
+    std::vector<int> perm(n_slots);
+    for (int i = 0; i < n_slots; i++) perm[i] = i;
+    std::shuffle(perm.begin(), perm.end(), rng);
+    for (int b = 0; b < B; b++) {
+        slot[b] = perm[b];
+        pos[b] = int(rng() % max_seq);
+    }
+    std::vector<float> q = randn(rng, size_t(B) * n_heads * hd);
+    std::vector<float> k = randn(rng, size_t(n_slots) * max_seq * kv_dim);
+    std::vector<float> v = randn(rng, size_t(n_slots) * max_seq * kv_dim);
+    Dev<float> dq(q), dk(k), dv(v);
+    Dev<int> dslot(slot), dpos(pos);
+    Dev<float> sc_bat(std::vector<float>(size_t(B) * n_heads * max_seq, 0.0f));
+    Dev<float> ctx_bat(std::vector<float>(size_t(B) * n_heads * hd + kCanary, kCanaryValue));
+    Dev<float> ctx_ref(std::vector<float>(size_t(B) * n_heads * hd, 0.0f));
+    Dev<float> sc_ref(std::vector<float>(size_t(n_heads) * max_seq, 0.0f));
+
+    int64_t max_len = 0;
+    for (int b = 0; b < B; b++) {
+        const int64_t len = pos[b] + 1;
+        max_len = std::max(max_len, len);
+        const float* kc = dk.p + size_t(slot[b]) * max_seq * kv_dim;
+        const float* vc = dv.p + size_t(slot[b]) * max_seq * kv_dim;
+        llm::gpu::launch_attention_cached_par(dq.p + b * n_heads * hd, kc, vc, sc_ref.p, len,
+                                              n_heads, n_kv, hd, ctx_ref.p + b * n_heads * hd,
+                                              llm::gpu::attention_par_threads(hd, max_seq));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    llm::gpu::launch_attention_cached_batched(dq.p, dk.p, dv.p, sc_bat.p, dslot.p, dpos.p, B,
+                                              max_len, n_heads, n_kv, hd, max_seq, ctx_bat.p,
+                                              llm::gpu::attention_par_threads(hd, max_seq));
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> a = ctx_ref.download(), c = ctx_bat.download();
+    // Both sides use the same thread count (from max_seq), hence the same
+    // reduction tree: results must match exactly.
+    double worst = 0.0;
+    for (size_t j = 0; j < a.size(); j++) if (a[j] != c[j]) worst = 1.0;
+    const std::string what = "batched/attn slots=" + std::to_string(n_slots) + " B=" +
+                             std::to_string(B) + " heads=" + std::to_string(n_heads) + "/" +
+                             std::to_string(n_kv) + " hd=" + std::to_string(hd);
+    report(worst == 0.0, what, worst, 0, "(differs from row-by-row par kernel)");
+    report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past ctx)");
+}
+
+void test_rope_append_batched(std::mt19937& rng, int n_slots, int B, int64_t n_heads,
+                              int64_t n_kv, int64_t hd, int64_t max_seq) {
+    const int64_t kv_dim = n_kv * hd;
+    std::vector<int> slot(B), pos(B);
+    for (int b = 0; b < B; b++) { slot[b] = b % n_slots; pos[b] = int(rng() % max_seq); }
+    std::vector<float> q = randn(rng, size_t(B) * n_heads * hd), k = randn(rng, size_t(B) * kv_dim),
+                       v = randn(rng, size_t(B) * kv_dim), cos = randn(rng, size_t(max_seq) * hd),
+                       sin = randn(rng, size_t(max_seq) * hd);
+    std::vector<float> cache0(size_t(n_slots) * max_seq * kv_dim, kCanaryValue);
+    Dev<float> dk(k), dv(v), dcos(cos), dsin(sin);
+    Dev<int> dslot(slot), dpos(pos);
+    Dev<float> q_ref(q), kc_ref(cache0), vc_ref(cache0), q_bat(q), kc_bat(cache0), vc_bat(cache0);
+    for (int b = 0; b < B; b++) {
+        const int64_t row = (int64_t(slot[b]) * max_seq + pos[b]) * kv_dim;
+        llm::gpu::launch_rope_qk_append(q_ref.p + b * n_heads * hd, dk.p + b * kv_dim,
+                                        dv.p + b * kv_dim, dcos.p + pos[b] * hd,
+                                        dsin.p + pos[b] * hd, n_heads, n_kv, hd,
+                                        kc_ref.p + row, vc_ref.p + row);
+    }
+    llm::gpu::launch_rope_qk_append_batched(q_bat.p, dk.p, dv.p, dcos.p, dsin.p, dslot.p, dpos.p,
+                                            B, n_heads, n_kv, hd, max_seq, kc_bat.p, vc_bat.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const std::string what = "batched/rope_append slots=" + std::to_string(n_slots) + " B=" +
+                             std::to_string(B) + " hd=" + std::to_string(hd);
+    report(q_ref.download() == q_bat.download(), what + " q", 1, 0, "(q differs)");
+    report(kc_ref.download() == kc_bat.download(), what + " k cache", 1, 0, "(k cache differs)");
+    report(vc_ref.download() == vc_bat.download(), what + " v cache", 1, 0, "(v cache differs)");
+}
+
+void test_argmax_rows(std::mt19937& rng, int B, int64_t V) {
+    std::vector<float> logits = randn(rng, size_t(B) * V);
+    if (B > 1 && V > 3) {   // plant an exact tie in row 1: lowest index must win
+        logits[V + 3] = 100.0f;
+        logits[V + V - 1] = 100.0f;
+    }
+    std::vector<int64_t> ref(B);
+    for (int b = 0; b < B; b++) {
+        int64_t best = 0;
+        for (int64_t v = 1; v < V; v++) if (logits[b * V + v] > logits[b * V + best]) best = v;
+        ref[b] = best;
+    }
+    Dev<float> dl(logits);
+    Dev<int64_t> dout(std::vector<int64_t>(B, -1));
+    llm::gpu::launch_argmax_rows(dl.p, B, V, dout.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    report(dout.download() == ref, "batched/argmax B=" + std::to_string(B) + " V=" +
+                                       std::to_string(V), 1, 0, "(argmax differs)");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -432,6 +588,24 @@ int main(int argc, char** argv) {
         const int64_t rope_layouts[][3] = {{14, 2, 64}, {12, 2, 128}, {4, 4, 8}, {8, 1, 16}};
         for (auto& L : rope_layouts)
             for (int64_t pos : {0, 1, 77}) test_rope_qk_append(rng, L[0], L[1], L[2], pos);
+    }
+
+    if (!selftest) {
+        for (int B : {1, 2, 7, 32})
+            for (int64_t in : {33, 896, 1536})
+                for (int64_t out : {1, 127, 896}) {
+                    test_gemv_batched(rng, B, in, out, false);
+                    test_gemv_batched(rng, B, in, out, true);
+                }
+        if (!smoke) test_gemv_batched(rng, 8, 8960, 1536, false);
+        const int64_t bl[][3] = {{14, 2, 64}, {12, 2, 128}, {4, 4, 8}};
+        for (auto& L : bl) {
+            for (int B : {1, 3, 8}) {
+                test_attention_batched(rng, 8, B, L[0], L[1], L[2], smoke ? 70 : 300);
+                test_rope_append_batched(rng, 4, B, L[0], L[1], L[2], 70);
+            }
+        }
+        for (int B : {1, 4}) for (int64_t V : {1, 255, 257, 151936}) test_argmax_rows(rng, B, V);
     }
 
     if (selftest) {

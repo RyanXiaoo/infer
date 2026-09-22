@@ -18,6 +18,7 @@ struct GpuSession::Impl {
     const GemmPath gemm;
     const AttnPath attn;
     const StepPath step;
+    int attn_threads = 0;   // chosen from max_seq so it matches GpuBatch bit for bit
     int64_t pos = 0;
 
     // Per-layer device caches, [max_seq x kv_dim] fp32.
@@ -65,6 +66,7 @@ struct GpuSession::Impl {
         gate_ = gate_up_.f();
         up_ = gate_ + I;
         attn_scores_ = DevBuf(size_t(c.num_attention_heads) * max_seq * 4);
+        attn_threads = gpu::attention_par_threads(hd, max_seq);
         d_logits_ = DevBuf(size_t(c.vocab_size) * 4);
         CUDA_CHECK(cudaMallocHost(&h_logits_, size_t(c.vocab_size) * 4));
         std::vector<float> cos_h, sin_h;
@@ -165,7 +167,7 @@ struct GpuSession::Impl {
             if (attn == AttnPath::kParallel)
                 gpu::launch_attention_cached_par(q_, k_cache[li].f(), v_cache[li].f(),
                                                  attn_scores_.f(), cache_len, nh, nkv, hd,
-                                                 ctx_.f());
+                                                 ctx_.f(), attn_threads);
             else
                 gpu::launch_attention_cached(q_, k_cache[li].f(), v_cache[li].f(), cache_len,
                                              nh, nkv, hd, ctx_.f());

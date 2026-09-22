@@ -91,6 +91,7 @@ void launch_attention_cached(const float* q, const float* k_cache,
 //   stored: still one thread per head (isolates the cost of the recomputation).
 //   par:    one block per head, `threads` threads splitting the cache positions
 //           (power of two, <= 1024; 0 = choose from hd and cache_len).
+int attention_par_threads(int64_t hd, int64_t len);
 void launch_attention_cached_stored(const float* q, const float* k_cache,
                                     const float* v_cache, float* scores,
                                     int64_t cache_len, int64_t n_heads, int64_t n_kv,
@@ -99,5 +100,26 @@ void launch_attention_cached_par(const float* q, const float* k_cache,
                                  const float* v_cache, float* scores, int64_t cache_len,
                                  int64_t n_heads, int64_t n_kv, int64_t hd, float* ctx,
                                  int threads = 0);
+
+// Stage 6 batched decode step (kernels/ops/batch.cu). Rows b < B carry
+// per-row device arrays slot[b] (which KV cache) and pos[b] (its position).
+// Caches are [n_slots x max_seq x kv_dim] per layer. B <= 32.
+// x is [kMaxRows x in] scratch (rows >= B are read, so keep them finite).
+void launch_gemv_batched(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
+                         int B, int64_t in, int64_t out, float* y);
+void launch_gemv_batched_v1(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
+                            int B, int64_t in, int64_t out, float* y);
+void launch_rope_qk_append_batched(float* q, const float* k, const float* v,
+                                   const float* cos_tab, const float* sin_tab,
+                                   const int* slot, const int* pos, int B, int64_t n_heads,
+                                   int64_t n_kv, int64_t hd, int64_t max_seq, float* k_cache,
+                                   float* v_cache);
+void launch_attention_cached_batched(const float* q, const float* k_cache,
+                                     const float* v_cache, float* scores, const int* slot,
+                                     const int* pos, int B, int64_t max_cache_len,
+                                     int64_t n_heads, int64_t n_kv, int64_t hd,
+                                     int64_t max_seq, float* ctx, int threads = 0);
+// out[b] = argmax over logits[b*V .. b*V+V) (lowest index on ties).
+void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out);
 
 } // namespace llm::gpu
