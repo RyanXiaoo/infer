@@ -52,6 +52,10 @@ target_link_libraries(test_tokenizer PRIVATE engine_core)
 target_compile_definitions(test_tokenizer PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME tokenizer COMMAND test_tokenizer)
 
+add_executable(test_scheduler tests/test_scheduler.cpp)
+target_link_libraries(test_scheduler PRIVATE engine_core)
+add_test(NAME scheduler COMMAND test_scheduler)
+
 add_executable(test_sampler tests/test_sampler.cpp)
 target_link_libraries(test_sampler PRIVATE engine_core)
 add_test(NAME sampler COMMAND test_sampler)
