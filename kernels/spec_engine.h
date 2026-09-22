@@ -14,8 +14,12 @@
 // The draft's cache lags one token behind when everything was accepted; it
 // catches up with one extra draft step before the next round.
 //
-// Rows with temperature > 0 fall back to a plain target step for now (sampled
-// speculation is the next commit). Plain C++ header; uses only GpuBatch.
+// Sampled rows (temperature > 0): the draft samples d_i from its own
+// distribution q_i; the target's verify logits p_i and the stashed draft
+// logits go to a device kernel (ops/spec.cu) that accepts d_i with
+// probability min(1, p_i(d_i)/q_i(d_i)) and otherwise samples the residual,
+// so every emitted token is distributed exactly as the target's p_i.
+// Plain C++ header; uses only GpuBatch.
 
 #pragma once
 
@@ -52,6 +56,7 @@ public:
 
     const SpecStats& stats() const { return stats_; }
     int k() const { return k_; }
+    ~SpecEngine();
 
 private:
     GpuBatch& target_;
@@ -61,6 +66,12 @@ private:
     // Per slot: a draft token the draft's cache still has to ingest (after a
     // round where every draft token was accepted), or -1.
     std::vector<int64_t> draft_owes_;
+    struct Dev;                    // device buffers for the sampled path (lazily made)
+    std::unique_ptr<Dev> dev_;
+    void accept_sampled(const std::vector<StepRow>& rows, const std::vector<size_t>& spec_idx,
+                        const std::vector<std::vector<int64_t>>& drafts, const std::vector<int64_t>& len0,
+                        size_t j0, const std::vector<size_t>& sampled_j, std::vector<int>& a_out,
+                        std::vector<int64_t>& tok_out);
 };
 
 } // namespace llm

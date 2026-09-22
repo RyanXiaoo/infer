@@ -358,13 +358,7 @@ __global__ void attention_combine_kernel(const float* part_m, const float* part_
 // softmax(logits / T); T = 0 falls back to the plain argmax, bit for bit.
 // The noise comes from a counter-based hash of (seed, step, index), so a
 // request with a fixed seed is reproducible and needs no RNG state.
-__device__ inline float gumbel_noise(uint64_t seed, uint64_t step, uint64_t v) {
-    uint64_t x = seed * 0x9E3779B97F4A7C15ull ^ (step + 0x632BE59BD9B4E019ull) * 0xBF58476D1CE4E5B9ull ^ v;
-    x ^= x >> 31; x *= 0x94D049BB133111EBull; x ^= x >> 29;
-    // uniform in (0, 1): top 24 bits, never exactly 0
-    const float u = (float((x >> 40) & 0xFFFFFF) + 0.5f) / 16777216.0f;
-    return -logf(-logf(u));
-}
+// gumbel_noise / hash_uniform live in ops.cuh (shared with spec_gpu.cu).
 
 __global__ void sample_rows_kernel(const float* logits, int64_t V, int64_t V_eff, const float* temperature,
                                    const uint64_t* seed, const int64_t* step, int64_t* out) {

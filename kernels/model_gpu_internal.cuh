@@ -50,6 +50,7 @@ struct DevBuf {
     float* f() const { return static_cast<float*>(p); }
     __nv_bfloat16* bf() const { return static_cast<__nv_bfloat16*>(p); }
     int64_t* i64() const { return static_cast<int64_t*>(p); }
+    int* i32() const { return static_cast<int*>(p); }
 };
 
 // One uploaded weight: bf16 always; fp32 mirror built on first cuBLAS use.

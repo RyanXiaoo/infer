@@ -438,6 +438,9 @@ std::vector<std::vector<int64_t>> GpuBatch::verify(const std::vector<VerifyGroup
     return impl_->verify(groups);
 }
 void GpuBatch::set_vocab_limit(int64_t limit) { impl_->V_eff = std::min(limit, impl_->V); }
+int64_t GpuBatch::vocab() const { return impl_->V; }
+int64_t GpuBatch::vocab_limit() const { return impl_->V_eff; }
+const float* GpuBatch::device_logits() const { return impl_->dec.logits.f(); }
 int64_t GpuBatch::position(int slot) const { return impl_->tables.at(size_t(slot)).length; }
 int64_t GpuBatch::bytes_per_block() const { return Impl::block_bytes(impl_->M.cfg); }
 int64_t GpuBatch::last_prefill_reused() const { return impl_->last_reused; }

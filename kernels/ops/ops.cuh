@@ -14,6 +14,31 @@
 #include <cuda_bf16.h>
 #include <cstdint>
 
+#ifdef __CUDACC__
+namespace llm { namespace gpu {
+// Counter-based RNG (Stage 9): a hash of (seed, step, index) gives a uniform
+// in (0, 1) with no state; the same triple always gives the same number.
+// Two splitmix64 finalizer rounds, the second after folding in the index:
+// the Stage 9 version XORed the index into the low bits before a single
+// multiply, which made the noises within one row a lattice (x0*K + d*K)
+// rather than independent draws and biased peaked distributions (found by
+// the Stage 11 distribution test, tests/test_ops_gpu.cu spec/accept).
+__device__ __forceinline__ uint64_t mix64(uint64_t z) {
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+__device__ __forceinline__ float hash_uniform(uint64_t seed, uint64_t step, uint64_t v) {
+    uint64_t x = mix64(seed + 0x9E3779B97F4A7C15ull * (step + 1));
+    x = mix64(x ^ (v + 0x632BE59BD9B4E019ull));
+    return (float((x >> 40) & 0xFFFFFF) + 0.5f) / 16777216.0f;   // top 24 bits, never 0
+}
+__device__ __forceinline__ float gumbel_noise(uint64_t seed, uint64_t step, uint64_t v) {
+    return -logf(-logf(hash_uniform(seed, step, v)));
+}
+}} // namespace llm::gpu
+#endif
+
 namespace llm::gpu {
 
 // out[t,i] = f32(table[ids[t]*H + i])
@@ -159,6 +184,16 @@ void launch_gemm_tiled(const float* x, const __nv_bfloat16* W, const __nv_bfloat
 
 // out[b] = sample from softmax(logits[b] / temperature[b]) via Gumbel-max with a
 // counter-based RNG keyed by (seed[b], step[b]); temperature 0 = exact argmax.
+// Speculative accept/resample (Stage 11), one block per verify group g:
+//   target logits rows trow[g] + i (stride V) are p_i (after candidate i);
+//   draft logits for step i, draft row drow[g], live at draft + (i*maxB + drow[g])*V.
+// For i in 0..k-1 accept drafts[g*k+i] with probability min(1, p_i(d)/q_i(d))
+// at temperature temp[g]; on the first rejection sample from the residual
+// max(0, p_i - q_i) normalised; if all k accepted sample from p_k. Writes the
+// accepted count out_a[g] (0..k) and the emitted token out_tok[g].
+void launch_spec_accept(const float* target, const float* draft, int64_t V, int64_t V_eff, int k, int maxB,
+                        const int* trow, const int* drow, const int64_t* pos0, const float* temp,
+                        const uint64_t* seed, const int64_t* drafts, int G, int* out_a, int64_t* out_tok);
 // Rows have stride V; only ids < V_eff are candidates.
 void launch_sample_rows(const float* logits, int B, int64_t V, int64_t V_eff, const float* temperature,
                         const uint64_t* seed, const int64_t* step, int64_t* out);

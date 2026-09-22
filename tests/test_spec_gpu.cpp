@@ -94,6 +94,45 @@ int main() {
                     ok, n_prompts, (long long)sch.steps(), 100 * spec.stats().acceptance());
     }
 
+    {   // sampled path: T = 0.001 is near-deterministic, so the sampled stream
+        // must equal greedy; T = 0.8 with a fixed seed must be reproducible
+        // and in range, with its acceptance reported.
+        llm::GpuBatch target(tgpu, 1, kMaxSeq, llm::GemmPath::kMine, 0, false, true);
+        llm::GpuBatch draft(dgpu, 1, kMaxSeq, llm::GemmPath::kMine, 0, false, true);
+        target.set_vocab_limit(std::min(tm.cfg.vocab_size, dm.cfg.vocab_size));
+        draft.set_vocab_limit(std::min(tm.cfg.vocab_size, dm.cfg.vocab_size));
+        llm::SpecEngine spec(target, draft, 4);
+        auto run = [&](int pi, float T, uint64_t seed) {
+            llm::SampleParams sp; sp.temperature = T; sp.seed = seed;
+            std::vector<int64_t> out{spec.prefill(0, prompts[pi], sp)};
+            while (int(out.size()) < N) {
+                auto m = spec.step_multi({{0, out.back(), sp}});
+                for (int64_t t : m[0]) if (int(out.size()) < N) out.push_back(t);
+            }
+            spec.release(0);
+            return out;
+        };
+        int ok = 0;
+        for (int pi = 0; pi < n_prompts; pi++) {
+            if (run(pi, 0.001f, 1) == ref[pi]) ok++;
+            else { failures++; std::printf("FAIL sampled T=0.001 prompt%d differs from greedy\n", pi); }
+        }
+        std::printf("sampled T=0.001, k=4: %d/%d identical to greedy, acceptance %.0f%%\n", ok, n_prompts,
+                    100 * spec.stats().acceptance());
+        const int64_t before_d = spec.stats().drafted, before_a = spec.stats().accepted;
+        int repro = 0, ranged = 0;
+        for (int pi = 0; pi < n_prompts; pi++) {
+            const std::vector<int64_t> a = run(pi, 0.8f, 7), b = run(pi, 0.8f, 7);
+            if (a == b) repro++;
+            bool in_range = int(a.size()) == N;
+            for (int64_t t : a) in_range &= t >= 0 && t < std::min(tm.cfg.vocab_size, dm.cfg.vocab_size);
+            if (in_range) ranged++;
+        }
+        if (repro != n_prompts || ranged != n_prompts) { failures++; std::printf("FAIL sampled T=0.8: repro %d ranged %d\n", repro, ranged); }
+        std::printf("sampled T=0.8, k=4: %d/%d reproducible with a fixed seed, acceptance %.0f%%\n", repro, n_prompts,
+                    100.0 * double(spec.stats().accepted - before_a) / double(spec.stats().drafted - before_d));
+    }
+
     if (failures == 0) { std::printf("test_spec_gpu: speculative == target greedy\n"); return 0; }
     std::printf("test_spec_gpu: %d FAILURES\n", failures);
     return 1;

@@ -728,6 +728,77 @@ void test_argmax_rows(std::mt19937& rng, int B, int64_t V) {
                                        std::to_string(V), 1, 0, "(argmax differs)");
 }
 
+// ------------------------------------------------------------ speculative accept
+//
+// The theorem behind speculative sampling: whatever the draft proposes, the
+// token emitted at a position is distributed exactly as the target's p. Check
+// it empirically on a 16-way vocabulary: N independent groups with the same
+// logits and different seeds; the histogram of emitted tokens must match
+// softmax(target / T) within sampling error (total variation < 0.03 at
+// N = 32768, where the expected TV of a perfect sampler is ~0.015).
+std::vector<float> softmax_T(const float* row, int64_t V, float T) {
+    std::vector<float> probs(static_cast<size_t>(V));
+    float m = -INFINITY;
+    for (int64_t v = 0; v < V; v++) m = std::max(m, row[v] / T);
+    float s = 0;
+    for (int64_t v = 0; v < V; v++) { probs[size_t(v)] = std::exp(row[v] / T - m); s += probs[size_t(v)]; }
+    for (float& x : probs) x /= s;
+    return probs;
+}
+double tv_distance(const std::vector<int64_t>& toks, const std::vector<float>& p) {
+    std::vector<double> h(p.size(), 0.0);
+    for (int64_t t : toks) h[size_t(t)] += 1.0 / double(toks.size());
+    double tv = 0;
+    for (size_t v = 0; v < p.size(); v++) tv += std::fabs(h[v] - p[v]);
+    return 0.5 * tv;
+}
+void test_spec_accept(std::mt19937& rng, float T, bool same_draft) {
+    const int64_t V = 16;
+    const int N = 32768, k = 1;
+    std::vector<float> t0 = randn(rng, size_t(V), 2.0f), t1 = randn(rng, size_t(V), 2.0f);
+    std::vector<float> q0 = same_draft ? t0 : randn(rng, size_t(V), 2.0f);
+    std::vector<float> target(size_t(N) * 2 * V), draft(size_t(N) * V);
+    for (int g = 0; g < N; g++) {
+        std::copy(t0.begin(), t0.end(), target.begin() + size_t(g) * 2 * V);
+        std::copy(t1.begin(), t1.end(), target.begin() + (size_t(g) * 2 + 1) * V);
+        std::copy(q0.begin(), q0.end(), draft.begin() + size_t(g) * V);
+    }
+    std::vector<int> drow(N), trow(N);
+    std::vector<int64_t> pos0(N, 7), seed_i(N), zero(N, 0);
+    std::vector<uint64_t> seed(N);
+    std::vector<float> temp(N, T);
+    for (int g = 0; g < N; g++) { drow[g] = g; trow[g] = 2 * g; seed[g] = uint64_t(g) + 1; seed_i[g] = g + 1; }
+    Dev<float> dt(target), dq(draft), dtemp(temp);
+    Dev<int> ddrow(drow), dtrow(trow), da(std::vector<int>(N, -1));
+    Dev<int64_t> dpos(pos0), dstep(pos0), ddrafts(zero), dtok(std::vector<int64_t>(N, -1));
+    Dev<uint64_t> dseed(seed);
+    // draft tokens d_1 ~ q_0 via the engine's own sampler (seed g, step pos0)
+    llm::gpu::launch_sample_rows(dq.p, N, V, V, dtemp.p, dseed.p, dstep.p, ddrafts.p);
+    llm::gpu::launch_spec_accept(dt.p, dq.p, V, V, k, N, dtrow.p, ddrow.p, dpos.p, dtemp.p, dseed.p, ddrafts.p, N,
+                                 da.p, dtok.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const std::vector<int64_t> drafts = ddrafts.download(), toks = dtok.download();
+    const std::vector<int> acc = da.download();
+    const std::string tag = "spec/accept T=" + std::to_string(T).substr(0, 4) + (same_draft ? " draft==target" : "");
+    report(tv_distance(drafts, softmax_T(q0.data(), V, T)) < 0.03, tag + " draft ~ q", tv_distance(drafts, softmax_T(q0.data(), V, T)), 0.03);
+    int accepted = 0;
+    std::vector<int64_t> first, bonus;
+    for (int g = 0; g < N; g++) {
+        if (acc[g] == 1) { accepted++; bonus.push_back(toks[size_t(g)]); first.push_back(drafts[size_t(g)]); }
+        else first.push_back(toks[size_t(g)]);
+    }
+    // position 0: accepted draft or residual sample, must be ~ p_0
+    const double tv0 = tv_distance(first, softmax_T(t0.data(), V, T));
+    report(tv0 < 0.03, tag + " emitted ~ p0 (accept " + std::to_string(100 * accepted / N) + "%)", tv0, 0.03);
+    if (same_draft) report(accepted == N, tag + " all accepted", N - accepted, 0);
+    // bonus tokens (given all accepted) ~ p_1
+    if (bonus.size() > 4000) {
+        const double tv1 = tv_distance(bonus, softmax_T(t1.data(), V, T));
+        report(tv1 < 0.03, tag + " bonus ~ p1", tv1, 0.03);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -797,6 +868,9 @@ int main(int argc, char** argv) {
             }
         }
         for (int B : {1, 4}) for (int64_t V : {1, 255, 257, 151936}) test_argmax_rows(rng, B, V);
+        test_spec_accept(rng, 1.0f, false);
+        test_spec_accept(rng, 0.5f, false);
+        test_spec_accept(rng, 1.0f, true);
         for (int64_t kv : {8, 128, 256}) test_block_copy(rng, kv);
         // flash-decoding: lengths that give 1, 2, 5 and (non-smoke) 17 splits,
         // both models' head layouts, an odd small layout.

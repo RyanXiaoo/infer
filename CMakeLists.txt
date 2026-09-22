@@ -123,10 +123,11 @@ if(CMAKE_CUDA_COMPILER)
     kernels/ops/elementwise.cu
     kernels/ops/cache.cu
     kernels/ops/batch.cu
+    kernels/ops/spec.cu
     kernels/ops/gemm.cu
     kernels/ops/quant.cu
     kernels/batch_gpu.cu
-    kernels/spec_engine.cpp)
+    kernels/spec_engine.cu)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 
   # Stage 5: per-shape decode GEMV microbench (mine vs cuBLAS, GB/s vs achievable).

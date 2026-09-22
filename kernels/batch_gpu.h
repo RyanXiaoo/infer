@@ -65,6 +65,11 @@ public:
     }
     // argmax/sampling consider only ids < limit (draft/target vocab padding differs).
     void set_vocab_limit(int64_t limit);
+    int64_t vocab() const;         // logits row stride
+    int64_t vocab_limit() const;
+    // Device logits of the last step()/verify() (rows in call order, stride
+    // vocab()); valid until the next forward on this engine.
+    const float* device_logits() const;
     // Teacher-forced scoring (perplexity): runs `ids` as one sequence in `slot`
     // and returns -log p(ids[i+1] | ids[..i]) for i in [0, n-1). Resets the slot.
     std::vector<float> score(int slot, const std::vector<int64_t>& ids);
