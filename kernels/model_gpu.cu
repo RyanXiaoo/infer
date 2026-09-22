@@ -47,6 +47,7 @@ GpuModel::GpuModel(const Model& m) : impl_(new Impl) {
         }
     }
     CUBLAS_CHECK(cublasCreate(&impl_->cublas));
+    CUBLAS_CHECK(cublasSetStream(impl_->cublas, cudaStreamPerThread));
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 

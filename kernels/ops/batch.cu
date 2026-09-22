@@ -238,7 +238,122 @@ __global__ void block_copy_kernel(const float* k_pool, const float* v_pool, int 
     v_out[int64_t(dst) * n + i] = v_pool[int64_t(src) * n + i];
 }
 
-// argmax over each row of logits [B x V]: one block per row, strided scan +
+// ---------------------------------------------------------------------------
+// Stage 8: flash-decoding. One block per (row, head) cannot hide the latency
+// of walking thousands of cached positions (measured: 610 us per launch at
+// ~3000 positions, 146 ms per single-sequence step). Split each (row, head)'s
+// positions across kSplits blocks: block s handles positions
+// [s*chunk, (s+1)*chunk) with its own running max m_s, sum l_s and partial
+// output o_s (online-softmax partials in registers and 1 KB of shared memory,
+// no scores buffer), then a small combine kernel merges the partials:
+//   M = max_s m_s;  L = sum_s l_s * exp(m_s - M);  out = sum_s o_s * exp(m_s - M) / L.
+// The grid is fixed per batch width (kSplits from max_seq), which keeps the
+// launch capturable into a CUDA graph; blocks past a row's length write empty
+// partials (m = -inf, l = 0).
+constexpr int kSplitChunk = 256;    // positions per block
+constexpr int kSplitThreads = 256;
+
+__global__ void attention_split_kernel(const float* q, const float* k_cache, const float* v_cache,
+                                       const int* slot, const int* pos, int64_t n_heads,
+                                       int64_t n_kv, int64_t hd, const int* table, int max_blocks,
+                                       int splits, float* part_m, float* part_l, float* part_o) {
+    __shared__ float sc[kSplitChunk];
+    __shared__ float red[kSplitThreads];
+    const int i = threadIdx.x, T = blockDim.x;
+    const int64_t h = blockIdx.x;
+    const int b = blockIdx.y, s_id = blockIdx.z;
+    const int64_t g = h / (n_heads / n_kv), kv_dim = n_kv * hd;
+    const int64_t cache_len = pos[b] + 1;
+    const int64_t chunk = (cache_len + splits - 1) / splits;
+    const int64_t s0 = int64_t(s_id) * chunk, s1 = min(cache_len, s0 + chunk);
+    const int64_t pidx = (int64_t(b) * n_heads + h) * splits + s_id;
+    float* o = part_o + pidx * hd;
+    if (s0 >= s1) {   // empty split
+        if (i == 0) { part_m[pidx] = -INFINITY; part_l[pidx] = 0.0f; }
+        for (int64_t d = i; d < hd; d += T) o[d] = 0.0f;
+        return;
+    }
+    const KvView K{k_cache, table + slot[b] * max_blocks, kv_dim, hd};
+    const KvView V{v_cache, table + slot[b] * max_blocks, kv_dim, hd};
+    const float scale = rsqrtf(float(hd));
+    const float* qr = q + b * n_heads * hd + h * hd;
+    const int n = int(s1 - s0);
+
+    // phase 1: scores for this split, block max
+    float m = -INFINITY;
+    for (int j = i; j < n; j += T) {
+        const float* kr = K.row(s0 + j, g);
+        float acc = 0.0f;
+        for (int64_t d = 0; d < hd; d++) acc += qr[d] * kr[d];
+        sc[j] = acc * scale;
+        if (sc[j] > m) m = sc[j];
+    }
+    red[i] = m;
+    __syncthreads();
+    for (int stride = T / 2; stride > 0; stride >>= 1) {
+        if (i < stride && red[i + stride] > red[i]) red[i] = red[i + stride];
+        __syncthreads();
+    }
+    const float ms = red[0];
+    __syncthreads();
+    // phase 2: exp and sum
+    float sum = 0.0f;
+    for (int j = i; j < n; j += T) sum += (sc[j] = expf(sc[j] - ms));
+    red[i] = sum;
+    __syncthreads();
+    for (int stride = T / 2; stride > 0; stride >>= 1) {
+        if (i < stride) red[i] += red[i + stride];
+        __syncthreads();
+    }
+    if (i == 0) { part_m[pidx] = ms; part_l[pidx] = red[0]; }
+    __syncthreads();
+    // phase 3: unnormalised weighted V sum. Thread c*hd + d owns dim d and
+    // every C-th position of the split; C-way reduce per dim.
+    const int classes = T >= hd ? T / int(hd) : 1;
+    if (T < hd) {
+        for (int64_t d = i; d < hd; d += T) {
+            float acc = 0.0f;
+            for (int j = 0; j < n; j++) acc += sc[j] * V.row(s0 + j, g)[d];
+            o[d] = acc;
+        }
+        return;
+    }
+    const int c = i / int(hd), d = i % int(hd);
+    float acc = 0.0f;
+    if (c < classes) {
+#pragma unroll 4
+        for (int j = c; j < n; j += classes) acc += sc[j] * V.row(s0 + j, g)[d];
+    }
+    red[i] = acc;
+    __syncthreads();
+    for (int stride = classes / 2; stride > 0; stride >>= 1) {
+        if (c < stride) red[i] += red[i + stride * int(hd)];
+        __syncthreads();
+    }
+    if (c == 0) o[d] = red[i];
+}
+
+// Combine: one block per (row, head); thread per output dim.
+__global__ void attention_combine_kernel(const float* part_m, const float* part_l,
+                                         const float* part_o, int64_t n_heads, int64_t hd,
+                                         int splits, float* ctx) {
+    const int64_t h = blockIdx.x;
+    const int b = blockIdx.y;
+    const int64_t base = (int64_t(b) * n_heads + h) * splits;
+    float M = -INFINITY;
+    for (int s = 0; s < splits; s++) M = fmaxf(M, part_m[base + s]);
+    float L = 0.0f;
+    for (int s = 0; s < splits; s++) L += part_l[base + s] * expf(part_m[base + s] - M);
+    const float inv = 1.0f / L;
+    for (int64_t d = threadIdx.x; d < hd; d += blockDim.x) {
+        float acc = 0.0f;
+        for (int s = 0; s < splits; s++)
+            acc += part_o[(base + s) * hd + d] * expf(part_m[base + s] - M);
+        ctx[(int64_t(b) * n_heads + h) * hd + d] = acc * inv;
+    }
+}
+
+// argmax over each row of logits// argmax over each row of logits [B x V]: one block per row, strided scan +
 // block reduce on (value, index); ties -> lowest index, matching the CPU loop.
 __global__ void argmax_rows_kernel(const float* logits, int64_t V, int64_t* out) {
     extern __shared__ float sv[];
@@ -322,6 +437,23 @@ void launch_attention_cached_batched(const float* q, const float* k_cache,
     attention_cached_batched_kernel<<<grid, threads, threads * sizeof(float)>>>(
         q, k_cache, v_cache, scores, slot, pos, n_heads, n_kv, hd, table, max_blocks,
         scores_stride, classes, ctx);
+}
+
+int attention_splits(int64_t max_seq) {
+    int s = int((max_seq + kSplitChunk - 1) / kSplitChunk);
+    return s < 1 ? 1 : s > 64 ? 64 : s;
+}
+
+void launch_attention_split(const float* q, const float* k_cache, const float* v_cache,
+                            const int* slot, const int* pos, int B, int64_t n_heads,
+                            int64_t n_kv, int64_t hd, const int* table, int max_blocks,
+                            int splits, float* part_m, float* part_l, float* part_o, float* ctx) {
+    const dim3 grid{unsigned(n_heads), unsigned(B), unsigned(splits)};
+    attention_split_kernel<<<grid, kSplitThreads>>>(q, k_cache, v_cache, slot, pos, n_heads, n_kv,
+                                                    hd, table, max_blocks, splits, part_m, part_l,
+                                                    part_o);
+    const dim3 cgrid{unsigned(n_heads), unsigned(B), 1u};
+    attention_combine_kernel<<<cgrid, 128>>>(part_m, part_l, part_o, n_heads, hd, splits, ctx);
 }
 
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out) {

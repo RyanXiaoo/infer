@@ -123,9 +123,23 @@ void launch_attention_cached_batched(const float* q, const float* k_cache,
                                      int64_t n_heads, int64_t n_kv, int64_t hd,
                                      const int* table, int max_blocks, int64_t scores_stride,
                                      float* ctx, int threads = 0);
+// Stage 8 flash-decoding: positions of each (row, head) split across `splits`
+// blocks (= attention_splits(max_seq), fixed per session) with online-softmax
+// partials part_m/part_l [B x n_heads x splits] and part_o [.. x hd], merged
+// by a combine kernel. Same inputs as launch_attention_cached_batched.
+int attention_splits(int64_t max_seq);
+void launch_attention_split(const float* q, const float* k_cache, const float* v_cache,
+                            const int* slot, const int* pos, int B, int64_t n_heads,
+                            int64_t n_kv, int64_t hd, const int* table, int max_blocks,
+                            int splits, float* part_m, float* part_l, float* part_o, float* ctx);
 // Copy-on-write: block src -> dst in one layer's K and V pools.
 void launch_block_copy(const float* k_pool, const float* v_pool, int src, int dst,
                        int64_t kv_dim, float* k_out, float* v_out);
+// Stage 8 prefill GEMM (kernels/ops/gemm.cu): y[T x out] = x[T x in] * W^T (+ bias),
+// 64x64 shared-memory tiles, fp32 accumulate. Any T, in, out.
+void launch_gemm_tiled(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,
+                       int64_t T, int64_t in, int64_t out, float* y);
+
 // out[b] = argmax over logits[b*V .. b*V+V) (lowest index on ties).
 void launch_argmax_rows(const float* logits, int B, int64_t V, int64_t* out);
 

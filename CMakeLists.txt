@@ -85,6 +85,10 @@ if(CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
   set(CMAKE_CUDA_ARCHITECTURES "120-real;120-virtual")
   set(CMAKE_CUDA_STANDARD 20)
+  # Per-thread default stream: lets GpuBatch capture its plain <<<>>> launch
+  # sequence into a CUDA graph (the legacy default stream cannot be captured).
+  # cuBLAS is pointed at the same stream in GpuModel's constructor.
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --default-stream per-thread")
 
   find_package(CUDAToolkit REQUIRED)   # for NVML (nvidia-ml) used by the harness
 
@@ -106,6 +110,7 @@ if(CMAKE_CUDA_COMPILER)
     kernels/ops/elementwise.cu
     kernels/ops/cache.cu
     kernels/ops/batch.cu
+    kernels/ops/gemm.cu
     kernels/batch_gpu.cu)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 

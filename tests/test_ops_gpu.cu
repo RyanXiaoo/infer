@@ -35,6 +35,7 @@
 #include "../src/f16.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -507,6 +508,44 @@ void test_attention_batched(std::mt19937& rng, int n_slots, int B, int64_t n_hea
     report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past ctx)");
 }
 
+void test_attention_split(std::mt19937& rng, int n_slots, int B, int64_t n_heads, int64_t n_kv,
+                          int64_t hd, int64_t max_seq) {
+    const int64_t kv_dim = n_kv * hd;
+    PagedFixture fx(rng, n_slots, max_seq);
+    std::vector<int> slot(B), pos(B);
+    for (int b = 0; b < B; b++) { slot[b] = b % n_slots; pos[b] = int(rng() % max_seq); }
+    if (B > 0) pos[0] = int(max_seq - 1);   // always cover the longest length
+    std::vector<float> q = randn(rng, size_t(B) * n_heads * hd);
+    const size_t pool_n = fx.table.size() * 16 * kv_dim;
+    std::vector<float> k = randn(rng, pool_n), v = randn(rng, pool_n);
+    Dev<float> dq(q), dk(k), dv(v);
+    Dev<int> dslot(slot), dpos(pos), dtab(fx.table);
+    const int splits = llm::gpu::attention_splits(max_seq);
+    Dev<float> sc(std::vector<float>(size_t(B) * n_heads * max_seq, 0.0f));
+    Dev<float> pm(std::vector<float>(size_t(B) * n_heads * splits, 0.0f)), pl(pm.download());
+    Dev<float> po(std::vector<float>(size_t(B) * n_heads * splits * hd, 0.0f));
+    Dev<float> ctx_ref(std::vector<float>(size_t(B) * n_heads * hd, 0.0f));
+    Dev<float> ctx_sp(std::vector<float>(size_t(B) * n_heads * hd + kCanary, kCanaryValue));
+    llm::gpu::launch_attention_cached_batched(dq.p, dk.p, dv.p, sc.p, dslot.p, dpos.p, B, max_seq,
+                                              n_heads, n_kv, hd, dtab.p, fx.max_blocks, max_seq,
+                                              ctx_ref.p, llm::gpu::attention_par_threads(hd, max_seq));
+    llm::gpu::launch_attention_split(dq.p, dk.p, dv.p, dslot.p, dpos.p, B, n_heads, n_kv, hd, dtab.p,
+                                     fx.max_blocks, splits, pm.p, pl.p, po.p, ctx_sp.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> a = ctx_ref.download(), c = ctx_sp.download();
+    double vmax = 0.0;
+    for (float f : v) vmax = std::max(vmax, double(std::abs(f)));
+    double worst = 0.0;
+    for (size_t j = 0; j < a.size(); j++)
+        worst = std::max(worst, std::abs(double(a[j]) - double(c[j])) / vmax);
+    const std::string what = "split/attn B=" + std::to_string(B) + " heads=" + std::to_string(n_heads) +
+                             "/" + std::to_string(n_kv) + " hd=" + std::to_string(hd) + " max_seq=" +
+                             std::to_string(max_seq) + " splits=" + std::to_string(splits);
+    report(worst <= 2e-5, what, worst, 2e-5);
+    report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past ctx)");
+}
+
 void test_rope_append_batched(std::mt19937& rng, int n_slots, int B, int64_t n_heads,
                               int64_t n_kv, int64_t hd, int64_t max_seq) {
     const int64_t kv_dim = n_kv * hd;
@@ -561,6 +600,38 @@ void test_block_copy(std::mt19937& rng, int64_t kv_dim) {
     std::copy_n(v.begin() + 3 * n, n, ve.begin() + 1 * n);
     report(dk.download() == ke && dv.download() == ve, "paged/block_copy kv_dim=" +
            std::to_string(kv_dim), 1, 0, "(copy wrong or touched other blocks)");
+}
+
+// Prefill GEMM against the naive T-row kernel (exact per-element order differs:
+// tolerance on conditioning, as for the GEMV).
+void test_gemm_tiled(std::mt19937& rng, int64_t T, int64_t in, int64_t out, bool bias) {
+    std::vector<float> w_f, b_f;
+    std::vector<uint16_t> w_bits = rand_bf16(rng, size_t(out) * in, 0.05f, w_f);
+    std::vector<uint16_t> b_bits = rand_bf16(rng, size_t(out), 0.5f, b_f);
+    std::vector<float> x = randn(rng, size_t(T) * in);
+    Dev<uint16_t> dW(w_bits), db(b_bits);
+    Dev<float> dx(x);
+    const auto* W = reinterpret_cast<const __nv_bfloat16*>(dW.p);
+    const auto* bb = bias ? reinterpret_cast<const __nv_bfloat16*>(db.p) : nullptr;
+    Dev<float> y_ref(std::vector<float>(size_t(T) * out, 0.0f));
+    Dev<float> y_t(std::vector<float>(size_t(T) * out + kCanary, kCanaryValue));
+    llm::gpu::launch_linear_mine(dx.p, W, bb, T, in, out, y_ref.p);
+    llm::gpu::launch_gemm_tiled(dx.p, W, bb, T, in, out, y_t.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> a = y_ref.download(), c = y_t.download();
+    double worst = 0.0;
+    for (int64_t t = 0; t < T; t++)
+        for (int64_t o = 0; o < out; o++) {
+            double mag = bias ? std::abs(double(b_f[o])) : 0.0;
+            for (int64_t i = 0; i < in; i++) mag += std::abs(double(w_f[o * in + i]) * double(x[t * in + i]));
+            const size_t j = size_t(t * out + o);
+            worst = std::max(worst, std::abs(double(c[j]) - double(a[j])) / (mag > 0 ? mag : 1.0));
+        }
+    const std::string what = "gemm/tiled T=" + std::to_string(T) + " " + std::to_string(out) + "x" +
+                             std::to_string(in) + (bias ? " +bias" : "");
+    report(worst <= kGemvTol, what, worst, kGemvTol);
+    report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past y)");
 }
 
 void test_argmax_rows(std::mt19937& rng, int B, int64_t V) {
@@ -654,6 +725,18 @@ int main(int argc, char** argv) {
         }
         for (int B : {1, 4}) for (int64_t V : {1, 255, 257, 151936}) test_argmax_rows(rng, B, V);
         for (int64_t kv : {8, 128, 256}) test_block_copy(rng, kv);
+        // flash-decoding: lengths that give 1, 2, 5 and (non-smoke) 17 splits,
+        // both models' head layouts, an odd small layout.
+        const int64_t sl[][3] = {{14, 2, 64}, {12, 2, 128}, {4, 4, 8}};
+        for (auto& L : sl)
+            for (int64_t ms : {1, 17, 256, 257, 1100})
+                for (int B : {1, 5}) test_attention_split(rng, 8, B, L[0], L[1], L[2], ms);
+        if (!smoke) for (auto& L : sl) test_attention_split(rng, 4, 3, L[0], L[1], L[2], 4097);
+        // GEMM edges: T, out, in each off a tile boundary; a real prefill shape.
+        for (auto& s : std::vector<std::array<int64_t, 3>>{{1, 1, 1}, {63, 65, 17}, {64, 64, 16},
+                                                            {65, 127, 33}, {100, 300, 896}})
+            for (bool bias : {false, true}) test_gemm_tiled(rng, s[0], s[2], s[1], bias);
+        if (!smoke) test_gemm_tiled(rng, 256, 1536, 8960, false);
     }
 
     if (selftest) {
