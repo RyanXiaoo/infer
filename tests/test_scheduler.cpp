@@ -30,24 +30,33 @@ int failures = 0;
 constexpr int64_t kEos = 999;
 
 // Request id N generates tokens N, N, N, ... and eos after `len[N]` tokens.
+// Memory is modelled as one "block" per token, `budget` blocks in total (0 =
+// unlimited). A preempted request comes back with its generated tokens inside
+// the prompt (prompt = [id, 1, 2, id, id, ...]); emitted is recovered from that.
 struct FakeEngine : llm::BatchEngine {
     int n_slots;
     int64_t cap;
+    int budget = 0;
     std::map<int64_t, int> len;                 // request id -> tokens before eos
-    struct SlotState { int64_t id = -1; int emitted = 0; };
+    struct SlotState { int64_t id = -1; int emitted = 0; int tokens = 0; bool used = false; };
     std::vector<SlotState> state;
     std::vector<std::vector<int>> step_rows;    // per step(): the slots decoded
 
     FakeEngine(int slots, int64_t max_seq) : n_slots(slots), cap(max_seq), state(slots) {}
     int slots() const override { return n_slots; }
     int64_t max_seq() const override { return cap; }
+    int used_blocks() const { int n = 0; for (auto& s : state) n += s.tokens; return n; }
+    bool has_room(int64_t prompt_len) const override {
+        return budget == 0 || used_blocks() + prompt_len + 1 <= budget;
+    }
     int64_t next(int slot) {
         SlotState& s = state[slot];
         s.emitted++;
         return s.emitted > len.at(s.id) ? kEos : s.id;
     }
     int64_t prefill(int slot, const std::vector<int64_t>& prompt) override {
-        state[slot] = SlotState{prompt.at(0), 0};   // prompt[0] carries the request id
+        if (!has_room(int64_t(prompt.size()))) return -1;
+        state[slot] = SlotState{prompt.at(0), int(prompt.size()) - 3, int(prompt.size()) + 1, true};
         return next(slot);
     }
     std::vector<int64_t> step(const std::vector<llm::StepRow>& rows) override {
@@ -56,12 +65,17 @@ struct FakeEngine : llm::BatchEngine {
         for (const auto& r : rows) {
             CHECK(r.token == (state[r.slot].emitted > len.at(state[r.slot].id) ? kEos : state[r.slot].id),
                   "fed token is not the slot's last output");
+            if (budget && used_blocks() + 1 > budget) { out.push_back(-1); continue; }
+            state[r.slot].tokens++;
             ss.push_back(r.slot);
             out.push_back(next(r.slot));
         }
         step_rows.push_back(ss);
         return out;
     }
+    void release(int slot) override { state[slot] = SlotState{}; }
+    int blocks_in_use() const override { return used_blocks(); }
+    int blocks_total() const override { return budget; }
 };
 
 llm::Request req(int64_t id, int max_new, int64_t arrival = 0) {
@@ -137,6 +151,32 @@ void test_arrivals_and_max_new() {
     CHECK(eng.step_rows[2].size() == 1, "step 2 rows %zu", eng.step_rows[2].size());
 }
 
+void test_preemption() {
+    // Same workload as test_outputs_and_timing but the fake engine holds only
+    // 14 token-blocks: two 3-token prompts (4 blocks each incl. the first output)
+    // fit, growth forces evictions. Outputs must be unchanged; preemptions > 0.
+    FakeEngine eng(2, 256);
+    eng.budget = 14;
+    eng.len = {{10, 3}, {20, 6}, {30, 2}, {40, 4}};
+    llm::SchedulerConfig cfg;
+    cfg.eos_id = kEos;
+    llm::Scheduler sch(eng, cfg);
+    for (int64_t id : {10, 20, 30, 40}) sch.submit(req(id, 100));
+    sch.run_until_idle();
+    CHECK(sch.completed().size() == 4, "preempt: %zu completed", sch.completed().size());
+    for (const auto& c : sch.completed())
+        CHECK(c.tokens == expect_tokens(c.id, eng.len.at(c.id), 100),
+              "preempt: request %lld tokens wrong", (long long)c.id);
+    CHECK(sch.preemptions() > 0, "expected at least one preemption");
+    CHECK(eng.used_blocks() == 0, "leak: %d blocks after idle", eng.used_blocks());
+    int preempt_events = 0;
+    for (size_t i = 0; i < sch.events().size(); i++)
+        if (sch.events().at(i).kind == llm::EventKind::kPreempt) preempt_events++;
+    CHECK(preempt_events == sch.preemptions(), "preempt events %d vs %d", preempt_events, sch.preemptions());
+    std::printf("preemption: 4 requests, %d preemptions, %lld steps\n", sch.preemptions(),
+                (long long)sch.steps());
+}
+
 void test_event_ring() {
     FakeEngine eng(1, 256);
     eng.len = {{7, 2}};
@@ -159,6 +199,7 @@ int main() {
     test_outputs_and_timing(true);
     test_outputs_and_timing(false);
     test_arrivals_and_max_new();
+    test_preemption();
     test_event_ring();
     if (failures == 0) { std::printf("test_scheduler: all checks passed\n"); return 0; }
     std::printf("test_scheduler: %d FAILURES\n", failures);

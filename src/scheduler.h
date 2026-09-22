@@ -38,10 +38,18 @@ public:
     virtual ~BatchEngine() = default;
     virtual int slots() const = 0;
     virtual int64_t max_seq() const = 0;
-    // Runs the prompt into `slot`'s cache; returns the first generated token.
+    // KV memory: can a prompt of this length be admitted right now?
+    virtual bool has_room(int64_t prompt_len) const = 0;
+    // Runs the prompt into `slot`'s cache; returns the first generated token,
+    // or -1 if the cache is out of memory (nothing is kept).
     virtual int64_t prefill(int slot, const std::vector<int64_t>& prompt) = 0;
-    // One decode step for all rows; out[i] is rows[i]'s next token.
+    // One decode step for all rows; out[i] is rows[i]'s next token, or -1 if
+    // that row could not get cache memory (its state is unchanged).
     virtual std::vector<int64_t> step(const std::vector<StepRow>& rows) = 0;
+    // Frees the slot's cache memory.
+    virtual void release(int slot) = 0;
+    virtual int blocks_in_use() const = 0;
+    virtual int blocks_total() const = 0;
 };
 
 struct Request {
@@ -49,6 +57,9 @@ struct Request {
     std::vector<int64_t> prompt;
     int max_new = 32;
     int64_t arrival_step = 0;   // scheduler step at which it may be admitted
+    // Set by preemption: tokens generated before eviction. On re-admission the
+    // prompt already includes them and generation resumes after them.
+    std::vector<int64_t> generated_so_far;
 };
 
 struct Completed {
@@ -56,9 +67,10 @@ struct Completed {
     std::vector<int64_t> tokens;   // generated ids, including eos if hit
     int64_t admitted_step = 0, finished_step = 0;
     double admitted_ms = 0, first_token_ms = 0, finished_ms = 0;   // wall clock
+    int preemptions = 0;
 };
 
-enum class EventKind : uint8_t { kAdmit = 1, kStep = 2, kRetire = 3 };
+enum class EventKind : uint8_t { kAdmit = 1, kStep = 2, kRetire = 3, kPreempt = 4 };
 
 // Fixed-size, POD: written into the ring buffer without allocating.
 struct Event {
@@ -71,6 +83,8 @@ struct Event {
     int64_t tokens;        // retire: generated count; step: rows*1
     double t_ms;           // wall clock since scheduler construction
     double dur_ms;         // step: prefill+decode time of this step
+    int32_t pool_in_use;   // KV blocks in use after the event
+    int32_t pool_total;
 };
 
 class EventRing {
@@ -109,6 +123,7 @@ public:
     void run_until_idle() { while (!idle()) step(); }
 
     const std::vector<Completed>& completed() const { return completed_; }
+    int preemptions() const { return preemptions_; }
     const EventRing& events() const { return events_; }
     int64_t steps() const { return step_; }
     int active() const { return active_count_; }
@@ -122,6 +137,7 @@ private:
         int64_t prompt_len = 0;
         int64_t admitted_step = 0;
         double admitted_ms = 0, first_token_ms = 0;
+        int preemptions = 0;
     };
     BatchEngine& eng_;
     SchedulerConfig cfg_;
@@ -131,11 +147,17 @@ private:
     EventRing events_;
     int64_t step_ = 0;
     int active_count_ = 0;
+    int preemptions_ = 0;
     double t0_ms_;
 
     double now_ms() const;
     void admit();
     void retire(int slot, uint8_t reason);
+    // Evicts the most recently admitted active request back to the queue
+    // front (recompute-style preemption). Returns its slot, or -1 if none.
+    int preempt_one();
+    Event ev(EventKind k, uint8_t reason, int slot, int64_t req, int64_t tokens, double t,
+             double dur) const;
 };
 
 } // namespace llm
