@@ -1,6 +1,6 @@
 # LLM inference engine from scratch (C++ / CUDA)
 
-A from-scratch inference engine for Llama-style models (Qwen2.5 0.5B and 1.5B today), built stage
+A from-scratch inference engine for Llama-style models (Qwen2.5 0.5B, 1.5B and, quantized, 7B), built stage
 by stage and documented as a blog series. No PyTorch, no cuDNN: the model loader, the transformer
 forward pass, the tokenizer, the KV cache, every CUDA kernel and the batching scheduler are written
 here. cuBLAS exists in the tree only behind a `--gemm=cublas` flag, as a bisection tool and a
@@ -55,6 +55,13 @@ streams closed mid-generation, zero KV blocks remain in use (`bench/stage9_load_
 tokenizer matches HuggingFace on an adversarial corpus (CJK, emoji, combining marks, mixed
 scripts): full Unicode classes and NFC normalization from generated tables.
 
+Quantization (Stage 10): an offline group-wise quantizer (int8 symmetric, int4 asymmetric, groups
+of 128, bf16 scales) and kernels that dequantize in registers. 1.5B single-sequence decode goes
+from 174 (bf16) to 244 (int8) to 313 tok/s (int4); int8 is lossless in perplexity (8.339 vs
+8.345 on 8k tokens) while round-to-nearest int4 costs +35%. With sharded loading and an untied
+LM head, Qwen2.5-7B-Instruct runs on the 16 GB card at int4 (4.0 GB of weights): 121 tok/s
+single-sequence, 234 tok/s at 16 slots in int8 (`bench/stage10_*.json`).
+
 On the 1.5B model the single-sequence decode GEMV reads weights at 791 GB/s against a measured achievable
 784 GB/s (STREAM-style, `kernels/bench/stream_bench.cu`): the kernel sits at the memory-bandwidth
 roofline. The theoretical single-sequence ceiling is 254 tok/s; the engine reaches 178, and the gap
@@ -83,9 +90,10 @@ Per-kernel evidence (Nsight Compute, `bench/stage5_ncu_counters.json`), naive ke
 | 7 | Paged KV cache: 16-position blocks, per-sequence block tables, free-list allocator with refcounts, prefix cache with copy-on-write, recompute-style preemption under a byte budget | `src/block_pool.cpp`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu` |
 | 8 | Tiled prefill GEMM (64x64 shared-memory tiles), flash-decoding attention over the paged cache (split positions, online-softmax partials, combine), CUDA-graph replay of the batched step, event-log replay visualizer | `kernels/ops/gemm.cu`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `viz/index.html` |
 | 9 | HTTP serving: engine thread + streaming request handles, cancellation, metrics; OpenAI-compatible completions/chat with SSE; Gumbel-max sampling kernel; load generator; tokenizer Unicode classes + NFC | `src/serve.cpp`, `src/main_server.cpp`, `tools/load_gen.py`, `src/unicode_tables.h` |
+| 10 | Weight quantization: group-wise int8/int4 quantizer and `.llmq` container, dequantizing GEMV/GEMM/embedding kernels, perplexity tool, sharded safetensors and untied LM head; 7B on 16 GB | `src/quant.cpp`, `tools/quantize.cpp`, `kernels/ops/quant.cu`, `tools/ppl.cpp` |
 
-Planned: int8/int4 quantization (10), speculative decoding (11); tensor-core (bf16 mma) prefill
-attention and GEMM; top-k/top-p in the batched path.
+Planned: speculative decoding (11); int4 calibration (GPTQ/AWQ-style); tensor-core (bf16 mma)
+prefill attention and GEMM; top-k/top-p in the batched path.
 
 ## Correctness discipline
 
@@ -127,6 +135,7 @@ attention and GEMM; top-k/top-p in the batched path.
 9. Paged KV cache (to be written)
 10. Long context, CUDA graphs and the replay visualizer (to be written)
 11. Serving and cancellation (to be written)
+12. Quantization and a 7B model (to be written)
 
 ## Building and running
 
@@ -153,6 +162,10 @@ LLM_MODEL=Qwen2.5-1.5B-Instruct ./build/test_forward_gpu
 ./build/main_serve_bench slots=1,2,4,8,16,32
 ./build/main_serve_bench slots=16 max_seq=4096 budget_mb=64 prefix=64 graphs=1
 # then open viz/index.html and drop bench/events_*.jsonl
+
+# Quantize (Stage 10) and run any tool on the quantized weights:
+./build/quantize models/Qwen2.5-1.5B-Instruct int4
+LLM_MODEL=Qwen2.5-1.5B-Instruct LLM_QUANT=int4 ./build/ppl 512 8192
 
 # Serve (Stage 9) and load it:
 ./build/main_server --port 8080 --slots 16 --max-seq 2048 --model Qwen2.5-1.5B-Instruct

@@ -11,7 +11,12 @@
    "bf16": 8.3389,
    "int8": 8.345,
    "int4": 11.2545
+  },
+  "Qwen2.5-7B-Instruct": {
+   "int8": 1.8294,
+   "int4": 2.5398
   }
  },
- "reading": "int8 is lossless to three digits; int4 round-to-nearest at group 128 costs +32-35% perplexity, the known gap that GPTQ/AWQ-style calibration or smaller groups close (out of scope)."
+ "reading": "int8 is lossless to three digits; int4 round-to-nearest at group 128 costs +32-35% perplexity, the known gap that GPTQ/AWQ-style calibration or smaller groups close (out of scope).",
+ "note_7b": "7B bf16 does not fit the card; 4095 eval tokens. Both 7B numbers are far below the small models' because the eval text (Alice in Wonderland, public domain) is likely memorised by the 7B model; compare dtypes within a model, not across models."
 }
