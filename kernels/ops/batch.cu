@@ -366,7 +366,7 @@ __device__ inline float gumbel_noise(uint64_t seed, uint64_t step, uint64_t v) {
     return -logf(-logf(u));
 }
 
-__global__ void sample_rows_kernel(const float* logits, int64_t V, const float* temperature,
+__global__ void sample_rows_kernel(const float* logits, int64_t V, int64_t V_eff, const float* temperature,
                                    const uint64_t* seed, const int64_t* step, int64_t* out) {
     extern __shared__ float sv[];
     int64_t* si = reinterpret_cast<int64_t*>(sv + blockDim.x);
@@ -375,7 +375,7 @@ __global__ void sample_rows_kernel(const float* logits, int64_t V, const float* 
     const float T = temperature[b];
     float best = -INFINITY;
     int64_t besti = 0;
-    for (int64_t v = threadIdx.x; v < V; v += blockDim.x) {
+    for (int64_t v = threadIdx.x; v < V_eff; v += blockDim.x) {
         const float x = T > 0.0f ? row[v] / T + gumbel_noise(seed[b], uint64_t(step[b]), uint64_t(v)) : row[v];
         if (x > best) { best = x; besti = v; }
     }
@@ -525,11 +525,11 @@ void launch_attention_split(const float* q, const float* k_cache, const float* v
     attention_combine_kernel<<<cgrid, 128>>>(part_m, part_l, part_o, n_heads, hd, splits, ctx);
 }
 
-void launch_sample_rows(const float* logits, int B, int64_t V, const float* temperature,
+void launch_sample_rows(const float* logits, int B, int64_t V, int64_t V_eff, const float* temperature,
                         const uint64_t* seed, const int64_t* step, int64_t* out) {
     const int threads = 256;
     sample_rows_kernel<<<B, threads, threads * (sizeof(float) + sizeof(int64_t))>>>(
-        logits, V, temperature, seed, step, out);
+        logits, V, V_eff, temperature, seed, step, out);
 }
 
 void launch_nll_rows(const float* logits, int B, int64_t V, const int64_t* target, float* out) {

@@ -51,6 +51,16 @@ public:
     int blocks_in_use() const override;
     int blocks_total() const override;
 
+    // Speculative decoding support (Stage 11).
+    // Roll a slot back to `len` positions (drop rejected draft rows).
+    void truncate(int slot, int64_t len);
+    // Run the k+1 candidate rows `tokens` at positions [len, len+k] of `slot`
+    // in one forward; returns the argmax (or sample, per `sample`) after each
+    // row. The slot's length becomes len + k + 1; the caller truncates to the
+    // accepted length.
+    std::vector<int64_t> verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample = {});
+    // argmax/sampling consider only ids < limit (draft/target vocab padding differs).
+    void set_vocab_limit(int64_t limit);
     // Teacher-forced scoring (perplexity): runs `ids` as one sequence in `slot`
     // and returns -log p(ids[i+1] | ids[..i]) for i in [0, n-1). Resets the slot.
     std::vector<float> score(int slot, const std::vector<int64_t>& ids);

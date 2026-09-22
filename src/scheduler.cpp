@@ -199,15 +199,22 @@ int Scheduler::step() {
     // Rows that cannot get cache memory are retried after evicting the most
     // recently admitted request, until every remaining row proceeds.
     while (!rows.empty()) {
-        std::vector<int64_t> next = eng_.step(rows);
+        std::vector<std::vector<int64_t>> next = eng_.step_multi(rows);
         std::vector<StepRow> retry;
         for (size_t i = 0; i < rows.size(); i++) {
-            if (next[i] < 0) { retry.push_back(rows[i]); continue; }
+            if (next[i].empty()) { retry.push_back(rows[i]); continue; }
             Active& a = slots_[rows[i].slot];
-            a.last_token = next[i];
-            a.out.push_back(next[i]);
-            if (cfg_.on_token) cfg_.on_token(a.req.id, next[i]);
-            decoded++;
+            // A speculative step may return several tokens: keep them up to the
+            // request's limits (eos / max_new); the retire pass acts on the last.
+            const int64_t eos = a.req.eos_id == Request::kUseDefault ? cfg_.eos_id : a.req.eos_id;
+            for (int64_t tok : next[i]) {
+                if (int(a.out.size()) >= a.req.max_new) break;
+                a.last_token = tok;
+                a.out.push_back(tok);
+                if (cfg_.on_token) cfg_.on_token(a.req.id, tok);
+                decoded++;
+                if (tok == eos) break;
+            }
         }
         if (retry.empty()) break;
         const int victim = preempt_one();

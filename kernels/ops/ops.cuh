@@ -159,7 +159,8 @@ void launch_gemm_tiled(const float* x, const __nv_bfloat16* W, const __nv_bfloat
 
 // out[b] = sample from softmax(logits[b] / temperature[b]) via Gumbel-max with a
 // counter-based RNG keyed by (seed[b], step[b]); temperature 0 = exact argmax.
-void launch_sample_rows(const float* logits, int B, int64_t V, const float* temperature,
+// Rows have stride V; only ids < V_eff are candidates.
+void launch_sample_rows(const float* logits, int B, int64_t V, int64_t V_eff, const float* temperature,
                         const uint64_t* seed, const int64_t* step, int64_t* out);
 // out[b] = -log softmax(logits[b])[target[b]]
 void launch_nll_rows(const float* logits, int B, int64_t V, const int64_t* target, float* out);

@@ -63,6 +63,7 @@ struct GpuBatch::Impl {
     const int max_blocks;         // per slot: ceil(max_seq / 16)
     int attn_threads, splits;
     int64_t kv_dim, H, hd, nh, nkv, q_out, kv_out, I, V, n_layers;
+    int64_t V_eff = 0;          // ids considered by argmax/sampling (<= V)
     int64_t last_reused = 0;
     static constexpr int kPrefillRows = 256;
 
@@ -106,6 +107,7 @@ struct GpuBatch::Impl {
         H = c.hidden_size; hd = c.head_dim; nh = c.num_attention_heads;
         nkv = c.num_key_value_heads; I = c.intermediate_size; V = c.vocab_size;
         n_layers = c.num_hidden_layers;
+        V_eff = V;
         kv_dim = nkv * hd; q_out = nh * hd; kv_out = kv_dim;
         attn_threads = gpu::attention_par_threads(hd, max_seq);
         splits = gpu::attention_splits(max_seq);
@@ -214,7 +216,7 @@ struct GpuBatch::Impl {
         if (S.all_logits) {
             gpu::launch_rmsnorm(S.h.f(), M.final_norm.bf(), eps, B, H, S.normed.f());
             linear_b(S.normed.f(), M.head(), nullptr, B, H, V, S.logits.f());
-            gpu::launch_sample_rows(S.logits.f(), B, V, S.d_temp.f(),
+            gpu::launch_sample_rows(S.logits.f(), B, V, V_eff, S.d_temp.f(),
                                     static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
         } else {
             // Last row only. The batched GEMV reads a whole 32-row group of its
@@ -226,7 +228,7 @@ struct GpuBatch::Impl {
             const int Bw = int(last - start + 1);
             linear_b(S.normed.f() + start * H, M.head(), nullptr, Bw, H, V, S.logits.f());
             // Sampling params of the last row are staged in element 0.
-            gpu::launch_sample_rows(S.logits.f() + (Bw - 1) * V, 1, V, S.d_temp.f(),
+            gpu::launch_sample_rows(S.logits.f() + (Bw - 1) * V, 1, V, V_eff, S.d_temp.f(),
                                     static_cast<const uint64_t*>(S.d_seed.p), S.d_step.i64(), S.d_out.i64());
         }
     }
@@ -342,6 +344,31 @@ struct GpuBatch::Impl {
         return nll;
     }
 
+    void truncate(int slot, int64_t len) {
+        BlockTable& t = tables[size_t(slot)];
+        if (len > t.length || len < 0) throw std::runtime_error("truncate: bad length");
+        t.length = len;
+    }
+
+    std::vector<int64_t> verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample) {
+        BlockTable& t = tables[size_t(slot)];
+        const int n = int(tokens.size());
+        if (n < 1 || n > kMaxRows) throw std::runtime_error("verify: 1..32 tokens");
+        if (t.length + n > max_seq) throw std::runtime_error("verify: cache full");
+        std::vector<Row> rows;
+        for (int i = 0; i < n; i++) {
+            if (tokens[size_t(i)] < 0 || tokens[size_t(i)] >= V) throw std::runtime_error("token id out of range");
+            rows.push_back({slot, t.length + i, tokens[size_t(i)], sample});
+        }
+        std::vector<bool> failed;
+        plan_rows(rows, failed);
+        for (bool f : failed) if (f) throw std::runtime_error("verify: out of blocks");
+        int64_t outs[kMaxRows];
+        forward_rows(dec, rows, outs);
+        t.length += n;
+        return std::vector<int64_t>(outs, outs + n);
+    }
+
     std::vector<int64_t> step(const std::vector<StepRow>& srows) {
         const int B = int(srows.size());
         if (B == 0) return {};
@@ -397,6 +424,11 @@ void GpuBatch::release(int slot) { impl_->release(slot); }
 int GpuBatch::blocks_in_use() const { return impl_->pool.n_in_use(); }
 int GpuBatch::blocks_total() const { return impl_->pool.n_blocks(); }
 std::vector<float> GpuBatch::score(int slot, const std::vector<int64_t>& ids) { return impl_->score(slot, ids); }
+void GpuBatch::truncate(int slot, int64_t len) { impl_->truncate(slot, len); }
+std::vector<int64_t> GpuBatch::verify(int slot, const std::vector<int64_t>& tokens, SampleParams sample) {
+    return impl_->verify(slot, tokens, sample);
+}
+void GpuBatch::set_vocab_limit(int64_t limit) { impl_->V_eff = std::min(limit, impl_->V); }
 int64_t GpuBatch::position(int slot) const { return impl_->tables.at(size_t(slot)).length; }
 int64_t GpuBatch::bytes_per_block() const { return Impl::block_bytes(impl_->M.cfg); }
 int64_t GpuBatch::last_prefill_reused() const { return impl_->last_reused; }

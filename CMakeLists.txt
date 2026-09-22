@@ -125,7 +125,8 @@ if(CMAKE_CUDA_COMPILER)
     kernels/ops/batch.cu
     kernels/ops/gemm.cu
     kernels/ops/quant.cu
-    kernels/batch_gpu.cu)
+    kernels/batch_gpu.cu
+    kernels/spec_engine.cpp)
   target_link_libraries(engine_gpu PUBLIC engine_core CUDA::cudart CUDA::cublas)
 
   # Stage 5: per-shape decode GEMV microbench (mine vs cuBLAS, GB/s vs achievable).
@@ -171,6 +172,12 @@ if(CMAKE_CUDA_COMPILER)
   add_executable(main_server src/main_server.cpp)
   target_link_libraries(main_server PRIVATE engine_gpu Threads::Threads)
   target_compile_definitions(main_server PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}" CPPHTTPLIB_NO_EXCEPTIONS=0)
+
+  # Stage 11: greedy speculative decoding == target greedy, token for token.
+  add_executable(test_spec_gpu tests/test_spec_gpu.cpp)
+  target_link_libraries(test_spec_gpu PRIVATE engine_gpu)
+  target_compile_definitions(test_spec_gpu PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
+  add_test(NAME spec_gpu COMMAND test_spec_gpu)
 
   # Stage 10: perplexity over the eval tokens (bf16 vs int8 vs int4).
   add_executable(ppl tools/ppl.cpp)

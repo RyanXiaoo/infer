@@ -58,6 +58,14 @@ public:
     // One decode step for all rows; out[i] is rows[i]'s next token, or -1 if
     // that row could not get cache memory (its state is unchanged).
     virtual std::vector<int64_t> step(const std::vector<StepRow>& rows) = 0;
+    // Engines that can emit several tokens per step (speculative decoding)
+    // override this; out[i] is empty when the row could not proceed.
+    virtual std::vector<std::vector<int64_t>> step_multi(const std::vector<StepRow>& rows) {
+        std::vector<int64_t> one = step(rows);
+        std::vector<std::vector<int64_t>> out(one.size());
+        for (size_t i = 0; i < one.size(); i++) if (one[i] >= 0) out[i] = {one[i]};
+        return out;
+    }
     // Frees the slot's cache memory.
     virtual void release(int slot) = 0;
     virtual int blocks_in_use() const = 0;
