@@ -157,6 +157,12 @@ if(CMAKE_CUDA_COMPILER)
   target_link_libraries(main_serve_bench PRIVATE engine_gpu)
   target_compile_definitions(main_serve_bench PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 
+  # Stage 9: HTTP server (cpp-httplib, vendored) over the serving core.
+  find_package(Threads REQUIRED)
+  add_executable(main_server src/main_server.cpp)
+  target_link_libraries(main_server PRIVATE engine_gpu Threads::Threads)
+  target_compile_definitions(main_server PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}" CPPHTTPLIB_NO_EXCEPTIONS=0)
+
   # KV cache test gains its GPU half in CUDA builds.
   target_compile_definitions(test_kv_cache PRIVATE HAVE_GPU)
   target_link_libraries(test_kv_cache PRIVATE engine_gpu)
