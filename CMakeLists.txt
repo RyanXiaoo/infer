@@ -25,7 +25,8 @@ add_library(engine_core STATIC
   src/session.cpp
   src/tokenizer.cpp
   src/sampler.cpp
-  src/scheduler.cpp)
+  src/scheduler.cpp
+  src/block_pool.cpp)
 target_include_directories(engine_core PUBLIC third_party)
 
 add_executable(test_loader tests/test_loader.cpp)
@@ -52,6 +53,10 @@ add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_link_libraries(test_tokenizer PRIVATE engine_core)
 target_compile_definitions(test_tokenizer PRIVATE MODEL_ROOT="${CMAKE_SOURCE_DIR}")
 add_test(NAME tokenizer COMMAND test_tokenizer)
+
+add_executable(test_block_pool tests/test_block_pool.cpp)
+target_link_libraries(test_block_pool PRIVATE engine_core)
+add_test(NAME block_pool COMMAND test_block_pool)
 
 add_executable(test_scheduler tests/test_scheduler.cpp)
 target_link_libraries(test_scheduler PRIVATE engine_core)
