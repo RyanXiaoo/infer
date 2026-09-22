@@ -35,6 +35,12 @@ Step time on 1.5B goes from 7.2 ms at 1 row to 13.9 ms at 8 rows: the weights ar
 step whatever the batch size, which is the whole reason batching works. Continuous batching beats
 static batching by 10 to 22% on the same request set at 4 to 16 slots (`bench/stage6_serve_*.json`).
 
+Paged KV cache (Stage 7), 1.5B, 16 slots, max_seq 4096: a 512 MB block pool serves the same
+request set at the same 639 tok/s as the reserved layout, with a peak of 46 blocks (41 MB) in use
+where reservation would hold 3.8 GB. A shared 64-token prompt prefix served from the prefix cache
+takes throughput from 285 to 624 tok/s and halves blocks in use; at a 32 MB budget the scheduler
+preempts (47 evictions) and still serves 442 tok/s (`bench/stage7_serve_*.json`).
+
 On the 1.5B model the single-sequence decode GEMV reads weights at 791 GB/s against a measured achievable
 784 GB/s (STREAM-style, `kernels/bench/stream_bench.cu`): the kernel sits at the memory-bandwidth
 roofline. The theoretical single-sequence ceiling is 254 tok/s; the engine reaches 178, and the gap
@@ -60,8 +66,9 @@ Per-kernel evidence (Nsight Compute, `bench/stage5_ncu_counters.json`), naive ke
 | 4 | KV cache with prefill/decode split; byte-level BPE tokenizer matching HF ids exactly on an English/code corpus; temperature / top-k / top-p sampling; streaming UTF-8-safe chat CLI | `src/session.cpp`, `kernels/session_gpu.cu`, `src/tokenizer.cpp`, `src/main_chat.cpp` |
 | 5 | Profile-driven kernel optimization: parallel cached attention (one block per head), row-parallel GEMV (one block per output row, interleaved loads, tree reduce), fused decode step (16 -> 9 launches per layer, bit-identical), hoisted per-token host work; STREAM bandwidth bench; roofline; ncu counters; second model (1.5B) with zero engine changes | `kernels/ops/cache.cu`, `kernels/ops/linear.cu`, `kernels/bench/`, `tools/nsys_kernel_summary.py`, `tools/ncu_stage5.sh` |
 | 6 | Batched decode (weights read once per step for up to 32 sequences) and a continuous-batching scheduler with a preallocated event ring; throughput-vs-latency sweep | `kernels/ops/batch.cu`, `kernels/batch_gpu.cu`, `src/scheduler.cpp`, `src/main_serve_bench.cpp` |
+| 7 | Paged KV cache: 16-position blocks, per-sequence block tables, free-list allocator with refcounts, prefix cache with copy-on-write, recompute-style preemption under a byte budget | `src/block_pool.cpp`, `kernels/ops/batch.cu`, `kernels/batch_gpu.cu` |
 
-Planned: paged KV cache with prefix sharing (7), fused flash-style attention over the paged layout
+Planned: fused flash-style attention over the paged layout
 and CUDA graphs (8), HTTP serving with cancellation (9), int8/int4 quantization (10), speculative
 decoding (11).
 
@@ -78,7 +85,10 @@ decoding (11).
   live cache rows, canary words past every output, and a `--selftest` mode that swaps in
   deliberately broken kernels and requires the sweep to reject them.
 - `tests/test_batch_gpu`: batched decode must equal single-sequence decode per row, both in
-  lockstep and with requests joining and leaving a running batch.
+  lockstep and with requests joining and leaving a running batch; also under a KV budget that
+  forces preemption, and with a shared prefix served from the prefix cache.
+- `tests/test_block_pool`, `tests/test_scheduler`: allocator, prefix cache, copy-on-write and
+  scheduler policy (admission, retirement, preemption) on the Mac against a fake engine.
 - `tools/sanitize.sh`: memcheck, racecheck, initcheck, synccheck, clean before a stage is called done.
 - Bisection: a golden-ladder failure on `--gemm=mine` that disappears on `--gemm=cublas` is a GEMV
   bug; one that persists is in RoPE, attention, norms or glue.
@@ -95,6 +105,7 @@ decoding (11).
 6. Kernel optimization (to be written)
 7. What limits speed once the kernels are fast (to be written)
 8. Batching and continuous batching (to be written)
+9. Paged KV cache (to be written)
 
 ## Building and running
 
@@ -117,8 +128,9 @@ python tools/dump_tokenizer_tests.py
 # Second model: every test and tool honours LLM_MODEL.
 LLM_MODEL=Qwen2.5-1.5B-Instruct ./build/test_forward_gpu
 
-# Serving sweep (Stage 6):
-./build/main_serve_bench 64 mine 1,2,4,8,16,32
+# Serving sweep (Stages 6-7): key=value args
+./build/main_serve_bench slots=1,2,4,8,16,32
+./build/main_serve_bench slots=16 max_seq=4096 budget_mb=64 prefix=64
 ```
 
 Model weights, goldens and profiler reports are not committed; `bench/*.json` records are.
