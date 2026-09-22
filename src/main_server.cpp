@@ -35,6 +35,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 using json = nlohmann::json;
@@ -91,11 +92,17 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "unknown flag %s\n", k.c_str()); return 2; }
     }
     const std::string root = MODEL_ROOT;
+    // Stage 10: LLM_QUANT=int8|int4 loads model.q8/q4.llmq instead of the bf16 weights.
     llm::Model model;
-    model.load(llm::model_dir(root));
+    llm::QuantModel qmodel;
+    const std::string quant = llm::quant_name();
+    if (quant.empty()) model.load(llm::model_dir(root));
+    else qmodel.load(llm::model_dir(root), quant == "int4" ? llm::QKind::kInt4 : llm::QKind::kInt8);
     llm::Tokenizer tok;
     tok.load(llm::model_dir(root) + "/tokenizer.json");
-    llm::GpuModel gpu(model);
+    std::unique_ptr<llm::GpuModel> gpu_p = quant.empty() ? std::make_unique<llm::GpuModel>(model)
+                                                         : std::make_unique<llm::GpuModel>(qmodel);
+    llm::GpuModel& gpu = *gpu_p;
     llm::GpuBatch engine(gpu, slots, max_seq, llm::gemm_path_from(gemm), budget_mb << 20, true, graphs);
     llm::SchedulerConfig cfg;
     cfg.eos_id = tok.eos_id();

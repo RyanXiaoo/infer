@@ -51,6 +51,32 @@ GpuModel::GpuModel(const Model& m) : impl_(new Impl) {
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+GpuModel::GpuModel(const QuantModel& m) : impl_(new Impl) {
+    impl_->cfg = m.cfg;
+    impl_->embed_tokens.upload_q(m.embed_tokens);
+    impl_->final_norm.upload_bf16_bits(m.final_norm.bf16, m.final_norm.rows);
+    impl_->layers.resize(m.layers.size());
+    for (size_t i = 0; i < m.layers.size(); i++) {
+        const QLayer& L = m.layers[i];
+        DevLayer& D = impl_->layers[i];
+        D.q_w.upload_q(L.q_w); D.k_w.upload_q(L.k_w); D.v_w.upload_q(L.v_w); D.o_w.upload_q(L.o_w);
+        D.gate_w.upload_q(L.gate_w); D.up_w.upload_q(L.up_w); D.down_w.upload_q(L.down_w);
+        D.input_ln.upload_bf16_bits(L.input_ln.bf16, L.input_ln.rows);
+        D.post_attn_ln.upload_bf16_bits(L.post_attn_ln.bf16, L.post_attn_ln.rows);
+        D.has_bias = L.has_bias;
+        if (D.has_bias) {
+            D.q_b.upload_bf16_bits(L.q_b.bf16, L.q_b.rows);
+            D.k_b.upload_bf16_bits(L.k_b.bf16, L.k_b.rows);
+            D.v_b.upload_bf16_bits(L.v_b.bf16, L.v_b.rows);
+        }
+    }
+    CUBLAS_CHECK(cublasCreate(&impl_->cublas));
+    CUBLAS_CHECK(cublasSetStream(impl_->cublas, cudaStreamPerThread));
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+bool GpuModel::quantized() const { return impl_->embed_tokens.quantized; }
+
 GpuModel::~GpuModel() {
     if (impl_ && impl_->cublas) cublasDestroy(impl_->cublas);
 }

@@ -135,6 +135,23 @@ void launch_attention_split(const float* q, const float* k_cache, const float* v
 // Copy-on-write: block src -> dst in one layer's K and V pools.
 void launch_block_copy(const float* k_pool, const float* v_pool, int src, int dst,
                        int64_t kv_dim, float* k_out, float* v_out);
+// Stage 10 quantised weights (kernels/ops/quant.cu). Layout per src/quant.h:
+// groups of 128 columns share a bf16 scale (and an int4 zero point).
+enum class QuantKind { kInt8, kInt4 };
+struct QuantView {
+    QuantKind kind;
+    int64_t rows, cols, groups;
+    const uint8_t* q;         // int8 bytes, or packed int4 nibbles (low first)
+    const uint16_t* scales;   // bf16 bits, rows * groups
+    const uint8_t* zeros;     // int4: rows * groups; int8: nullptr
+};
+void launch_gemv_batched_q(const float* x, const QuantView& W, const __nv_bfloat16* bias, int B,
+                           int64_t in, int64_t out, float* y);
+void launch_gemm_tiled_q(const float* x, const QuantView& W, const __nv_bfloat16* bias, int64_t T,
+                         int64_t in, int64_t out, float* y);
+void launch_embedding_q(const QuantView& table, const int64_t* ids, int64_t T, int64_t H,
+                        float* out);
+
 // Stage 8 prefill GEMM (kernels/ops/gemm.cu): y[T x out] = x[T x in] * W^T (+ bias),
 // 64x64 shared-memory tiles, fp32 accumulate. Any T, in, out.
 void launch_gemm_tiled(const float* x, const __nv_bfloat16* W, const __nv_bfloat16* bias,

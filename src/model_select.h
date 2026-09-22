@@ -26,6 +26,11 @@ inline std::string model_name() {
 inline std::string model_dir(const std::string& root) {
     return root + "/models/" + model_name();
 }
+// LLM_QUANT=int8|int4 selects the quantised weight file (Stage 10); unset = bf16.
+inline std::string quant_name() {
+    const char* env = std::getenv("LLM_QUANT");
+    return env && env[0] ? env : "";
+}
 inline std::string golden_dir(const std::string& root) {
     const std::string name = model_name();
     return name == kDefaultModel ? root + "/tests/golden" : root + "/tests/golden/" + name;

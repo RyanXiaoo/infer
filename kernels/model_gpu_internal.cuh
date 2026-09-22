@@ -10,10 +10,12 @@
 #include "model_gpu.h"
 #include "common/cuda_check.cuh"
 #include "ops/ops.cuh"
+#include "../src/quant.h"
 
 #include <cublas_v2.h>
 
 #include <cmath>
+#include <stdexcept>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -56,6 +58,34 @@ struct DevTensor {
     const __nv_bfloat16* view = nullptr;   // set instead of bf16 by upload_into
     DevBuf f32;          // empty until ensure_f32
     int64_t numel = 0;
+    // Stage 10: quantised matrices live here instead of in bf16.
+    bool quantized = false;
+    DevBuf qdata, qscales, qzeros;
+    gpu::QuantView qview{};
+
+    void upload_q(const QTensor& t) {
+        quantized = true;
+        numel = t.rows * t.cols;
+        const size_t nq = t.q_bytes(), ns = size_t(t.rows) * t.groups();
+        qdata = DevBuf(nq);
+        CUDA_CHECK(cudaMemcpy(qdata.p, t.q, nq, cudaMemcpyHostToDevice));
+        qscales = DevBuf(ns * 2);
+        CUDA_CHECK(cudaMemcpy(qscales.p, t.scales, ns * 2, cudaMemcpyHostToDevice));
+        if (t.zeros) {
+            qzeros = DevBuf(ns);
+            CUDA_CHECK(cudaMemcpy(qzeros.p, t.zeros, ns, cudaMemcpyHostToDevice));
+        }
+        qview = gpu::QuantView{t.kind == QKind::kInt4 ? gpu::QuantKind::kInt4 : gpu::QuantKind::kInt8,
+                               t.rows, t.cols, t.groups(), static_cast<const uint8_t*>(qdata.p),
+                               static_cast<const uint16_t*>(qscales.p),
+                               t.zeros ? static_cast<const uint8_t*>(qzeros.p) : nullptr};
+    }
+    // bf16 vector (norm, bias) from a .llmq file.
+    void upload_bf16_bits(const uint16_t* data, int64_t n) {
+        numel = n;
+        bf16 = DevBuf(size_t(n) * 2);
+        CUDA_CHECK(cudaMemcpy(bf16.p, data, size_t(n) * 2, cudaMemcpyHostToDevice));
+    }
 
     // Upload into a slice of a buffer owned by someone else. Used so q|k|v and
     // gate|up sit back to back in device memory: row-major [out, in] matrices
@@ -75,6 +105,7 @@ struct DevTensor {
     }
     const __nv_bfloat16* bf() const { return view ? view : bf16.bf(); }
     const float* ensure_f32() {
+        if (quantized) throw std::runtime_error("cuBLAS path needs bf16 weights (gemm=mine for quantised models)");
         if (!f32.p) {
             f32 = DevBuf(size_t(numel) * 4);
             gpu::launch_bf16_to_f32(bf(), numel, f32.f());
@@ -122,6 +153,7 @@ struct GpuModel::Impl {
     // naive = the Stage 3 kernel always, cublas = Sgemm on fp32 mirrors.
     void linear(GemmPath path, const float* x, DevTensor& W, DevTensor* b,
                 int64_t T, int64_t in, int64_t out, float* y) {
+        if (W.quantized) throw std::runtime_error("this path has no quantised kernels; use GpuBatch");
         if (path == GemmPath::kMineNaive) {
             gpu::launch_linear_mine(x, W.bf(), b ? b->bf() : nullptr, T, in, out, y);
             return;

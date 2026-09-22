@@ -134,6 +134,11 @@ struct GpuBatch::Impl {
     // reference paths run their own T-row forms.
     void linear_b(const float* x, DevTensor& W, DevTensor* b, int T, int64_t in, int64_t out,
                   float* y) {
+        if (W.quantized) {   // Stage 10: dequantise in the kernel
+            if (T <= kMaxRows) gpu::launch_gemv_batched_q(x, W.qview, b ? b->bf() : nullptr, T, in, out, y);
+            else gpu::launch_gemm_tiled_q(x, W.qview, b ? b->bf() : nullptr, T, in, out, y);
+            return;
+        }
         if (gemm != GemmPath::kMine) { M.linear(gemm, x, W, b, T, in, out, y); return; }
         if (T <= kMaxRows) gpu::launch_gemv_batched(x, W.bf(), b ? b->bf() : nullptr, T, in, out, y);
         else gpu::launch_gemm_tiled(x, W.bf(), b ? b->bf() : nullptr, T, in, out, y);
@@ -177,7 +182,8 @@ struct GpuBatch::Impl {
         const int* dpos = static_cast<const int*>(S.d_pos.p);
         const int* dtab = static_cast<const int*>(d_table.p);
 
-        gpu::launch_embedding(M.embed_tokens.bf(), S.d_ids.i64(), B, H, S.h.f());
+        if (M.embed_tokens.quantized) gpu::launch_embedding_q(M.embed_tokens.qview, S.d_ids.i64(), B, H, S.h.f());
+        else gpu::launch_embedding(M.embed_tokens.bf(), S.d_ids.i64(), B, H, S.h.f());
         for (int64_t li = 0; li < n_layers; li++) {
             DevLayer& L = M.layers[li];
             gpu::launch_rmsnorm(S.h.f(), L.input_ln.bf(), eps, B, H, S.normed.f());

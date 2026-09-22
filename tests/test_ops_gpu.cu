@@ -33,6 +33,7 @@
 #include "../kernels/common/cuda_check.cuh"
 #include "../kernels/ops/ops.cuh"
 #include "../src/f16.h"
+#include "../src/quant.h"
 
 #include <algorithm>
 #include <array>
@@ -634,6 +635,78 @@ void test_gemm_tiled(std::mt19937& rng, int64_t T, int64_t in, int64_t out, bool
     report(canary_intact(c, a.size()), what + " canary", 1, 0, "(wrote past y)");
 }
 
+// Stage 10: the quantised kernels must reproduce src/quant.h's dequant()
+// exactly in the weights they multiply; the sums are checked against a double
+// reference over the dequantised values (kGemvTol on conditioning).
+struct QFix {
+    llm::QMatrix m;
+    Dev<uint8_t> q, zeros;
+    Dev<uint16_t> scales;
+    std::vector<float> w;   // dequantised, row-major
+    QFix(std::mt19937& rng, int64_t rows, int64_t cols, llm::QKind kind)
+        : m(llm::quantize(rand_bf16_bits(rng, size_t(rows) * cols, 0.05f).data(), rows, cols, kind)),
+          q(m.q), zeros(m.zeros.empty() ? std::vector<uint8_t>(1, 0) : m.zeros), scales(m.scales),
+          w(size_t(rows) * cols) {
+        const llm::QTensor v = m.view();
+        for (int64_t r = 0; r < rows; r++)
+            for (int64_t c = 0; c < cols; c++) w[size_t(r * cols + c)] = llm::dequant(v, r, c);
+    }
+    static std::vector<uint16_t> rand_bf16_bits(std::mt19937& rng, size_t n, float sd) {
+        std::vector<float> f; return rand_bf16(rng, n, sd, f);
+    }
+    llm::gpu::QuantView view() const {
+        return llm::gpu::QuantView{m.kind == llm::QKind::kInt4 ? llm::gpu::QuantKind::kInt4 : llm::gpu::QuantKind::kInt8,
+                                   m.rows, m.cols, m.view().groups(), q.p, scales.p,
+                                   m.zeros.empty() ? nullptr : zeros.p};
+    }
+};
+
+void test_quant_linear(std::mt19937& rng, llm::QKind kind, int T, int64_t in, int64_t out, bool bias) {
+    QFix W(rng, out, in, kind);
+    std::vector<float> b_f;
+    std::vector<uint16_t> b_bits = rand_bf16(rng, size_t(out), 0.5f, b_f);
+    std::vector<float> x = randn(rng, size_t(std::max(T, 32)) * in);
+    Dev<uint16_t> db(b_bits);
+    Dev<float> dx(x);
+    Dev<float> y(std::vector<float>(size_t(T) * out + kCanary, kCanaryValue));
+    const auto* bb = bias ? reinterpret_cast<const __nv_bfloat16*>(db.p) : nullptr;
+    if (T <= 32) llm::gpu::launch_gemv_batched_q(dx.p, W.view(), bb, T, in, out, y.p);
+    else llm::gpu::launch_gemm_tiled_q(dx.p, W.view(), bb, T, in, out, y.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> c = y.download();
+    double worst = 0.0;
+    for (int64_t t = 0; t < T; t++)
+        for (int64_t o = 0; o < out; o++) {
+            double acc = bias ? double(b_f[o]) : 0.0, mag = std::abs(acc);
+            for (int64_t i = 0; i < in; i++) {
+                const double p = double(W.w[size_t(o * in + i)]) * double(x[size_t(t * in + i)]);
+                acc += p; mag += std::abs(p);
+            }
+            worst = std::max(worst, std::abs(double(c[size_t(t * out + o)]) - acc) / (mag > 0 ? mag : 1.0));
+        }
+    const std::string what = std::string("quant/") + llm::qkind_name(kind) + (T <= 32 ? " gemv T=" : " gemm T=") +
+                             std::to_string(T) + " " + std::to_string(out) + "x" + std::to_string(in) + (bias ? " +bias" : "");
+    report(worst <= kGemvTol, what, worst, kGemvTol);
+    report(canary_intact(c, size_t(T) * out), what + " canary", 1, 0, "(wrote past y)");
+}
+
+void test_quant_embedding(std::mt19937& rng, llm::QKind kind) {
+    const int64_t V = 50, H = 256;
+    QFix tab(rng, V, H, kind);
+    std::vector<int64_t> ids{0, 49, 7, 7};
+    Dev<int64_t> dids(ids);
+    Dev<float> out(std::vector<float>(ids.size() * H, 0.0f));
+    llm::gpu::launch_embedding_q(tab.view(), dids.p, int64_t(ids.size()), H, out.p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> o = out.download();
+    bool ok = true;
+    for (size_t t = 0; t < ids.size(); t++)
+        for (int64_t i = 0; i < H; i++) ok &= o[t * H + i] == tab.w[size_t(ids[t] * H + i)];
+    report(ok, std::string("quant/") + llm::qkind_name(kind) + " embedding", 1, 0, "(differs from dequant())");
+}
+
 void test_argmax_rows(std::mt19937& rng, int B, int64_t V) {
     std::vector<float> logits = randn(rng, size_t(B) * V);
     if (B > 1 && V > 3) {   // plant an exact tie in row 1: lowest index must win
@@ -737,6 +810,13 @@ int main(int argc, char** argv) {
                                                             {65, 127, 33}, {100, 300, 896}})
             for (bool bias : {false, true}) test_gemm_tiled(rng, s[0], s[2], s[1], bias);
         if (!smoke) test_gemm_tiled(rng, 256, 1536, 8960, false);
+        for (llm::QKind k : {llm::QKind::kInt8, llm::QKind::kInt4}) {
+            test_quant_embedding(rng, k);
+            for (int T : {1, 5, 32, 70})
+                for (auto& s : std::vector<std::array<int64_t, 2>>{{128, 64}, {130, 127}, {896, 300}, {1536, 65}})
+                    for (bool bias : {false, true}) test_quant_linear(rng, k, T, s[0], s[1], bias);
+            if (!smoke) test_quant_linear(rng, k, 8, 8960, 1536, false);
+        }
     }
 
     if (selftest) {

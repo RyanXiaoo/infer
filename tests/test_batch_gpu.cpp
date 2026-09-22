@@ -18,6 +18,7 @@
 #include "../src/model.h"
 #include "../src/model_select.h"
 #include "../src/npy.h"
+#include "../src/quant.h"
 #include "../src/scheduler.h"
 
 #include <cstdio>
@@ -245,6 +246,31 @@ int main() {
         if (s1 == greedy && s2 == greedy) { failures++; std::printf("FAIL sampling: T=0.8 identical to greedy\n"); }
         if (s1 == s2) { failures++; std::printf("FAIL sampling: two seeds identical\n"); }
         std::printf("sampling: T=0 == greedy, seed 7 reproducible, seeds 7/8 %s\n", s1 == s2 ? "SAME" : "differ");
+    }
+
+    // (g) Stage 10: the int8 and int4 models run through the same engine. Their
+    // tokens are not expected to equal bf16's. Teacher-forced next-token
+    // agreement: feed bf16's tokens and compare each prediction (a free-running
+    // comparison would count a whole diverged continuation as disagreement).
+    // int8 must stay close (>= 85%); int4 is reported.
+    for (llm::QKind k : {llm::QKind::kInt8, llm::QKind::kInt4}) {
+        const std::string path = llm::QuantModel::file_for(llm::model_dir(root), k);
+        if (!std::ifstream(path)) { std::printf("skip %s: %s not found (run ./build/quantize)\n", llm::qkind_name(k), path.c_str()); continue; }
+        llm::QuantModel qm;
+        qm.load(llm::model_dir(root), k);
+        llm::GpuModel qgpu(qm);
+        llm::GpuBatch batch(qgpu, n_prompts, kMaxSeq, llm::GemmPath::kMine, 0, true, true);
+        std::vector<std::vector<int64_t>> ref;
+        for (const auto& p : prompts) ref.push_back(llm::greedy_decode_cached_gpu(gpu, p, N, kMaxSeq, llm::GemmPath::kMine));
+        int agree = 0, total = 0;
+        for (int s = 0; s < n_prompts; s++) {
+            std::vector<int64_t> pred{batch.prefill(s, prompts[s])};
+            for (int t = 1; t < N; t++) pred.push_back(batch.step({{s, ref[size_t(s)][size_t(t - 1)]}})[0]);
+            for (int t = 0; t < N; t++) { total++; agree += pred[size_t(t)] == ref[size_t(s)][size_t(t)]; }
+        }
+        const double rate = 100.0 * agree / total;
+        std::printf("quant %s: top-1 agreement with bf16 %d/%d (%.0f%%)\n", llm::qkind_name(k), agree, total, rate);
+        if (k == llm::QKind::kInt8 && rate < 85.0) { failures++; std::printf("FAIL int8 agreement below 85%%\n"); }
     }
 
     if (failures == 0) { std::printf("test_batch_gpu: batched == single on all prompts\n"); return 0; }

@@ -41,6 +41,7 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -93,9 +94,15 @@ int main(int argc, char** argv) {
     const bool attn_split = get("attn", "split") != "par";
     const llm::GemmPath gemm = llm::gemm_path_from(gemm_s);
 
+    // Stage 10: LLM_QUANT=int8|int4 loads model.q8/q4.llmq instead of the bf16 weights.
     llm::Model model;
-    model.load(llm::model_dir(root));
-    llm::GpuModel gpu(model);
+    llm::QuantModel qmodel;
+    const std::string quant = llm::quant_name();
+    if (quant.empty()) model.load(llm::model_dir(root));
+    else qmodel.load(llm::model_dir(root), quant == "int4" ? llm::QKind::kInt4 : llm::QKind::kInt8);
+    std::unique_ptr<llm::GpuModel> gpu_p = quant.empty() ? std::make_unique<llm::GpuModel>(model)
+                                                         : std::make_unique<llm::GpuModel>(qmodel);
+    llm::GpuModel& gpu = *gpu_p;
     const std::string golden = llm::golden_dir(root);
     std::vector<std::vector<int64_t>> prompts;
     for (int pi = 0; pi < 5; pi++) {

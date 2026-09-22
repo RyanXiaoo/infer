@@ -10,6 +10,7 @@
 
 #include "../src/forward.h"   // Model, TapFn
 #include "../src/model.h"
+#include "../src/quant.h"
 
 #include <cstdint>
 #include <memory>
@@ -54,6 +55,10 @@ public:
     // Uploads every weight tensor (bf16, byte-identical to the file) to the
     // device once. `m` must outlive nothing — weights are copied, not viewed.
     explicit GpuModel(const Model& m);
+    // Stage 10: matrices uploaded as int8/int4 (+ scales); only GpuBatch's
+    // gemm=mine path can run them.
+    explicit GpuModel(const QuantModel& m);
+    bool quantized() const;
     ~GpuModel();
     GpuModel(const GpuModel&) = delete;
     GpuModel& operator=(const GpuModel&) = delete;
