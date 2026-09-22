@@ -13,6 +13,8 @@
 
 #include "ops.cuh"
 
+#include <cstdlib>
+
 namespace llm::gpu {
 
 namespace {
@@ -143,55 +145,76 @@ __global__ void gemv_q_direct_kernel(const float* __restrict__ x, QuantView W,
     }
 }
 
+// Staged kernel: RW output rows per warp share each activation float4 from
+// registers (Stage 11 register tiling, same as the bf16 kernel in batch.cu):
+// shared traffic per weight is 4*BT/RW bytes instead of 4*BT, which is what
+// held batch 8..32 to a quarter of the bandwidth.
+template <int BT> __host__ __device__ constexpr int q_rows_per_warp() { return BT >= 32 ? 2 : BT >= 4 ? 4 : 1; }
+
 template <int BT, QuantKind KIND>
 __global__ void gemv_batched_q_kernel(const float* __restrict__ x, QuantView W,
                                       const __nv_bfloat16* __restrict__ bias, int B, int64_t in,
                                       float* __restrict__ y, int64_t out) {
-    // Serves the larger batch widths (int8 above 4 rows, int4 above 16); the
-    // direct kernel below serves the rest. 256-column chunks measured best
-    // here; wider chunks cost registers and lost at batch 16.
+    // Serves the larger batch widths; the direct kernel above serves the
+    // small ones. 256-column chunks measured best here; wider chunks cost
+    // registers and lost at batch 16.
     constexpr int CH = 256;
     constexpr int K = Fetch<KIND>::K;
     constexpr int V4 = K / 4;
+    constexpr int RW = q_rows_per_warp<BT>();
     // A lane's activation reads are K consecutive floats, done as float4 loads
     // (conflict-free per quarter-warp; scalar reads at stride K were a K-way
     // bank conflict that made this kernel slower than bf16 at batch 16).
     __shared__ __align__(16) float xs[BT][CH];
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-    const int64_t o = int64_t(blockIdx.x) * kRowsPerBlock + warp;
-    const int64_t row = o < out ? o : 0;
-    const uint16_t* __restrict__ row_scales = W.scales + row * W.groups;
-    const uint8_t* __restrict__ row_q = W.q + (KIND == QuantKind::kInt4 ? row * W.cols / 2 : row * W.cols);
-
-    float acc[BT];
+    const int64_t o0 = (int64_t(blockIdx.x) * kRowsPerBlock + warp) * RW;
+    int64_t rows[RW];
 #pragma unroll
-    for (int b = 0; b < BT; b++) acc[b] = 0.0f;
+    for (int r = 0; r < RW; r++) rows[r] = o0 + r < out ? o0 + r : 0;
+
+    float acc[RW][BT];
+#pragma unroll
+    for (int r = 0; r < RW; r++)
+#pragma unroll
+        for (int b = 0; b < BT; b++) acc[r][b] = 0.0f;
 
     for (int64_t c0 = 0; c0 < in; c0 += CH) {
         const int len = int(in - c0 < CH ? in - c0 : CH);
-        for (int t = threadIdx.x; t < BT * CH; t += blockDim.x) {
-            const int b = t / CH, j = t % CH;
-            xs[b][j] = j < len ? x[int64_t(b) * in + c0 + j] : 0.0f;
+        for (int t = threadIdx.x; t < BT * (CH / 4); t += blockDim.x) {
+            const int b = t / (CH / 4), j4 = (t % (CH / 4)) * 4;
+            float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (j4 + 4 <= len && (in & 3) == 0) v = *reinterpret_cast<const float4*>(x + int64_t(b) * in + c0 + j4);
+            else {
+                v.x = j4 < len ? x[int64_t(b) * in + c0 + j4] : 0.f;
+                v.y = j4 + 1 < len ? x[int64_t(b) * in + c0 + j4 + 1] : 0.f;
+                v.z = j4 + 2 < len ? x[int64_t(b) * in + c0 + j4 + 2] : 0.f;
+                v.w = j4 + 3 < len ? x[int64_t(b) * in + c0 + j4 + 3] : 0.f;
+            }
+            *reinterpret_cast<float4*>(&xs[b][j4]) = v;
         }
         __syncthreads();
-        if (o < out) {
+        if (o0 < out) {
             for (int j = lane * K; j < len; j += 32 * K) {
                 const int64_t c = c0 + j;
-                float w[K];
-                if (j + K <= len) {
-                    const float sc = bf16_bits(row_scales[c / kGroup]);
-                    const uint32_t v = load4(row_q + (KIND == QuantKind::kInt4 ? c / 2 : c));
-                    if (KIND == QuantKind::kInt8) {
+                float w[RW][K];
 #pragma unroll
-                        for (int i = 0; i < 4; i++) w[i] = sc * float(int8_t((v >> (8 * i)) & 0xFF));
-                    } else {
-                        const int z = W.zeros[row * W.groups + c / kGroup];
+                for (int r = 0; r < RW; r++) {
+                    const int64_t row = rows[r];
+                    if (j + K <= len) {
+                        const float sc = bf16_bits(W.scales[row * W.groups + c / kGroup]);
+                        const uint32_t v = load4(W.q + (KIND == QuantKind::kInt4 ? (row * W.cols + c) / 2 : row * W.cols + c));
+                        if (KIND == QuantKind::kInt8) {
 #pragma unroll
-                        for (int i = 0; i < 8; i++) w[i] = sc * float(int((v >> (4 * i)) & 0xF) - z);
+                            for (int i = 0; i < 4; i++) w[r][i] = sc * float(int8_t((v >> (8 * i)) & 0xFF));
+                        } else {
+                            const int z = W.zeros[row * W.groups + c / kGroup];
+#pragma unroll
+                            for (int i = 0; i < 8; i++) w[r][i] = sc * float(int((v >> (4 * i)) & 0xF) - z);
+                        }
+                    } else {   // ragged tail of the last chunk: element-wise, never past the row
+#pragma unroll
+                        for (int i = 0; i < K; i++) w[r][i] = j + i < len ? dequant_at(W, row, c + i) : 0.0f;
                     }
-                } else {   // ragged tail of the last chunk: element-wise, never past the row
-#pragma unroll
-                    for (int i = 0; i < K; i++) w[i] = j + i < len ? dequant_at(W, row, c + i) : 0.0f;
                 }
 #pragma unroll
                 for (int b = 0; b < BT; b++) {
@@ -199,21 +222,32 @@ __global__ void gemv_batched_q_kernel(const float* __restrict__ x, QuantView W,
 #pragma unroll
                     for (int v4 = 0; v4 < V4; v4++) {
                         const float4 f = xv[v4];
-                        acc[b] += w[4 * v4] * f.x + w[4 * v4 + 1] * f.y + w[4 * v4 + 2] * f.z + w[4 * v4 + 3] * f.w;
+#pragma unroll
+                        for (int r = 0; r < RW; r++)
+                            acc[r][b] += w[r][4 * v4] * f.x + w[r][4 * v4 + 1] * f.y + w[r][4 * v4 + 2] * f.z + w[r][4 * v4 + 3] * f.w;
                     }
                 }
             }
         }
         __syncthreads();
     }
-    if (o >= out) return;
+    if (o0 >= out) return;
 #pragma unroll
-    for (int b = 0; b < BT; b++)
-        for (int off = 16; off > 0; off >>= 1)
-            acc[b] += __shfl_down_sync(0xffffffffu, acc[b], off);
+    for (int r = 0; r < RW; r++)
+#pragma unroll
+        for (int b = 0; b < BT; b++)
+            for (int off = 16; off > 0; off >>= 1)
+                acc[r][b] += __shfl_down_sync(0xffffffffu, acc[r][b], off);
     if (lane == 0) {
-        const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
-        for (int b = 0; b < B; b++) y[int64_t(b) * out + o] = acc[b] + bv;
+#pragma unroll
+        for (int r = 0; r < RW; r++) {
+            const int64_t o = o0 + r;
+            if (o >= out) break;
+            const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
+#pragma unroll
+            for (int b = 0; b < BT; b++)
+                if (b < B) y[int64_t(b) * out + o] = acc[r][b] + bv;
+        }
     }
 }
 
@@ -279,27 +313,33 @@ void launch_gemv_batched_q(const float* x, const QuantView& W, const __nv_bfloat
                            int64_t in, int64_t out, float* y) {
     const unsigned grid = unsigned((out + kRowsPerBlock - 1) / kRowsPerBlock);
     const int threads = kRowsPerBlock * 32;
-#define LAUNCH(BT, KIND) gemv_batched_q_kernel<BT, KIND><<<grid, threads>>>(x, W, bias, B, in, y, out)
+    // Direct (no staging) up to direct_max rows, staged above. Measured on
+    // 1.5B and 7B with kernels/bench/gemv_width_bench; LLM_Q_DIRECT_MAX
+    // overrides for experiments.
+    static const int env_max = std::getenv("LLM_Q_DIRECT_MAX") ? std::atoi(std::getenv("LLM_Q_DIRECT_MAX")) : -1;
+    const int direct_max = env_max >= 0 ? env_max : (W.kind == QuantKind::kInt8 ? 4 : 2);
+#define LAUNCH(BT, KIND) do { \
+        const unsigned g = unsigned((out + kRowsPerBlock * q_rows_per_warp<BT>() - 1) / (kRowsPerBlock * q_rows_per_warp<BT>())); \
+        gemv_batched_q_kernel<BT, KIND><<<g, threads>>>(x, W, bias, B, in, y, out); } while (0)
 #define DIRECT(BT, KIND)                                                                    \
     do {                                                                                    \
         if ((in & 3) == 0) gemv_q_direct_kernel<BT, KIND, true><<<grid, threads>>>(x, W, bias, B, in, y, out);  \
         else gemv_q_direct_kernel<BT, KIND, false><<<grid, threads>>>(x, W, bias, B, in, y, out);               \
     } while (0)
-    // Measured on 1.5B: the direct kernel wins for int4 up to batch 16 and for
-    // int8 up to batch 4; beyond that the staged kernel (activations shared by
-    // 8 rows) is faster.
-#define DISPATCH(KIND, DIRECT_MAX)                                          \
-    do {                                                                    \
-        if (B <= 1) DIRECT(1, KIND);                                        \
-        else if (B <= 2) DIRECT(2, KIND);                                   \
-        else if (B <= 4) DIRECT(4, KIND);                                   \
-        else if (B <= 8) { if (DIRECT_MAX >= 8) DIRECT(8, KIND); else LAUNCH(8, KIND); }      \
-        else if (B <= 16) { if (DIRECT_MAX >= 16) DIRECT(16, KIND); else LAUNCH(16, KIND); }  \
-        else LAUNCH(32, KIND);                                              \
+#define PICK(BT, KIND) do { if (B <= direct_max) DIRECT(BT, KIND); else LAUNCH(BT, KIND); } while (0)
+#define DISPATCH(KIND)                                  \
+    do {                                                \
+        if (B <= 1) PICK(1, KIND);                      \
+        else if (B <= 2) PICK(2, KIND);                 \
+        else if (B <= 4) PICK(4, KIND);                 \
+        else if (B <= 8) PICK(8, KIND);                 \
+        else if (B <= 16) PICK(16, KIND);               \
+        else LAUNCH(32, KIND);                          \
     } while (0)
-    if (W.kind == QuantKind::kInt8) DISPATCH(QuantKind::kInt8, 4);
-    else DISPATCH(QuantKind::kInt4, 16);
+    if (W.kind == QuantKind::kInt8) DISPATCH(QuantKind::kInt8);
+    else DISPATCH(QuantKind::kInt4);
 #undef DISPATCH
+#undef PICK
 #undef DIRECT
 #undef LAUNCH
 }

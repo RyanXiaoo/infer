@@ -133,6 +133,8 @@ if(CMAKE_CUDA_COMPILER)
   # Stage 5: per-shape decode GEMV microbench (mine vs cuBLAS, GB/s vs achievable).
   add_executable(gemv_bench kernels/bench/gemv_bench.cu)
   target_link_libraries(gemv_bench PRIVATE bench_harness engine_gpu)
+  add_executable(gemv_width_bench kernels/bench/gemv_width_bench.cu)
+  target_link_libraries(gemv_width_bench PRIVATE bench_harness engine_gpu)
 
   # Stage 5: measured achievable memory bandwidth (the GEMV tables' 100% mark).
   add_executable(stream_bench kernels/bench/stream_bench.cu)

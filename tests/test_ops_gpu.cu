@@ -854,7 +854,7 @@ int main(int argc, char** argv) {
 
     if (!selftest) {
         for (int B : {1, 2, 7, 32})
-            for (int64_t in : {33, 896, 1536})
+            for (int64_t in : {33, 8, 264, 896, 1536})
                 for (int64_t out : {1, 127, 896}) {
                     test_gemv_batched(rng, B, in, out, false);
                     test_gemv_batched(rng, B, in, out, true);

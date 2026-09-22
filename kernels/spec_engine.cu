@@ -112,32 +112,59 @@ std::vector<std::vector<int64_t>> SpecEngine::step_multi(const std::vector<StepR
     if (any_sampled && !dev_) dev_ = std::make_unique<Dev>(k_, target_.slots(), target_.vocab());
     if (any_sampled && int(B) > dev_->maxB) throw std::runtime_error("SpecEngine: more rows than slots");
 
-    // 1. Draft catches up where it still owes a token, then drafts k tokens
-    //    for every row with k batched steps (sampled rows draw d_i ~ q_i with
-    //    the request's temperature and seed; their logits are stashed for the
-    //    accept kernel).
-    std::vector<StepRow> owe;
-    for (size_t i : spec_idx) {
-        const int s = rows[i].slot;
-        if (draft_owes_[size_t(s)] >= 0) { owe.push_back({s, draft_owes_[size_t(s)], {}}); draft_owes_[size_t(s)] = -1; }
-    }
-    if (!owe.empty()) draft_.step(owe);
-
+    // 1. Draft: k batched steps for every row (sampled rows draw d_i ~ q_i
+    //    with the request's temperature and seed; their logits are stashed for
+    //    the accept kernel). A slot whose previous round accepted every draft
+    //    still owes the draft its d_k: the first step runs that slot as a
+    //    2-token group [d_k, last] (a verify call) so the catch-up costs no
+    //    extra forward.
     std::vector<StepRow> drows;
     for (size_t i : spec_idx) drows.push_back({rows[i].slot, rows[i].token, rows[i].sample});
     std::vector<std::vector<int64_t>> drafts(spec_idx.size());
     std::vector<int64_t> len0(spec_idx.size());   // target length before this round
     for (size_t j = 0; j < spec_idx.size(); j++) len0[j] = target_.position(rows[spec_idx[j]].slot);
     for (int step = 0; step < k_; step++) {
-        std::vector<int64_t> d = draft_.step(drows);
+        std::vector<int64_t> d(drows.size(), -1);
+        if (step == 0) {
+            size_t j0 = 0;
+            while (j0 < drows.size()) {
+                std::vector<GpuBatch::VerifyGroup> groups;
+                size_t nrows = 0, j1 = j0;
+                for (; j1 < drows.size(); j1++) {
+                    const int s = drows[j1].slot;
+                    const int64_t owed = draft_owes_[size_t(s)];
+                    const size_t n = owed >= 0 ? 2 : 1;
+                    if (nrows + n > size_t(GpuBatch::kMaxRows)) break;
+                    std::vector<int64_t> toks;
+                    if (owed >= 0) toks.push_back(owed);
+                    toks.push_back(drows[j1].token);
+                    groups.push_back({s, toks, drows[j1].sample});
+                    nrows += n;
+                }
+                std::vector<std::vector<int64_t>> r = draft_.verify(groups);
+                size_t row = 0;
+                for (size_t j = j0; j < j1; j++) {
+                    d[j] = r[j - j0].back();
+                    row += r[j - j0].size();
+                    if (any_sampled)   // the group's last row holds q_1 for this slot
+                        CUDA_CHECK(cudaMemcpy(dev_->stash_row(0) + j * size_t(dev_->V),
+                                              draft_.device_logits() + (row - 1) * size_t(dev_->V),
+                                              size_t(dev_->V) * 4, cudaMemcpyDeviceToDevice));
+                    draft_owes_[size_t(drows[j].slot)] = -1;
+                }
+                j0 = j1;
+            }
+        } else {
+            d = draft_.step(drows);
+            if (any_sampled)
+                CUDA_CHECK(cudaMemcpy(dev_->stash_row(step), draft_.device_logits(), drows.size() * size_t(dev_->V) * 4,
+                                      cudaMemcpyDeviceToDevice));
+        }
         for (size_t j = 0; j < drows.size(); j++) {
             if (d[j] < 0) throw std::runtime_error("speculative: draft out of cache memory");
             drafts[j].push_back(d[j]);
             drows[j].token = d[j];
         }
-        if (any_sampled)
-            CUDA_CHECK(cudaMemcpy(dev_->stash_row(step), draft_.device_logits(), drows.size() * size_t(dev_->V) * 4,
-                                  cudaMemcpyDeviceToDevice));
     }
     // The draft's cache now holds k positions past len0 (last, d_1 .. d_{k-1}).
 

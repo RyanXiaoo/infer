@@ -36,9 +36,9 @@ constexpr int kChunk = 256;
 constexpr int kRowsPerBlock = 8;
 
 template <int BT>
-__global__ void gemv_batched_kernel(const float* x, const __nv_bfloat16* W,
-                                    const __nv_bfloat16* bias, int B, int64_t in,
-                                    float* y, int64_t out) {
+__global__ void gemv_batched_v2_kernel(const float* x, const __nv_bfloat16* W,
+                                       const __nv_bfloat16* bias, int B, int64_t in,
+                                       float* y, int64_t out) {
     __shared__ float xs[BT][kChunk];
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     const int64_t o = int64_t(blockIdx.x) * kRowsPerBlock + warp;
@@ -72,6 +72,93 @@ __global__ void gemv_batched_kernel(const float* x, const __nv_bfloat16* W,
     if (lane == 0) {
         const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
         for (int b = 0; b < B; b++) y[int64_t(b) * out + o] = acc[b] + bv;
+    }
+}
+
+// v3 (Stage 11): v2's inner loop issued one 2-byte weight load and BT scalar
+// shared-memory reads per weight, so at BT >= 8 the shared-memory pipe, not
+// DRAM, set the pace (LM head: 825 GB/s at B=1, 403 at B=8, 216 at B=16).
+// Two changes. (1) A lane owns 4 consecutive columns twice per 256-column
+// chunk: one 8-byte weight load (4 bf16) and float4 activation reads, a
+// quarter of the shared reads; lanes' float4 reads are 16 bytes apart, so a
+// quarter-warp phase touches 128 contiguous bytes, conflict-free. (2) Each
+// warp computes RW output rows at once, reusing every activation float4 RW
+// times from registers: shared traffic per weight drops from 4*BT bytes to
+// 4*BT/RW. RW = 4 for BT 4..16 (acc[4][16] = 64 registers), 2 at 32, 1 for
+// the widths where shared traffic was never the limit (small shapes then
+// keep 8 rows per block and enough blocks to fill the SMs). Needs
+// in % 8 == 0 (every model dim is); other widths take v2.
+template <int BT> __host__ __device__ constexpr int rows_per_warp() { return BT >= 32 ? 2 : BT >= 4 ? 4 : 1; }
+
+template <int BT>
+__global__ void gemv_batched_kernel(const float* x, const __nv_bfloat16* W,
+                                    const __nv_bfloat16* bias, int B, int64_t in,
+                                    float* y, int64_t out) {
+    constexpr int RW = rows_per_warp<BT>();
+    __shared__ __align__(16) float xs[BT][kChunk];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int64_t o0 = (int64_t(blockIdx.x) * kRowsPerBlock + warp) * RW;
+    const __nv_bfloat16* wr[RW];
+#pragma unroll
+    for (int r = 0; r < RW; r++) wr[r] = W + (o0 + r < out ? o0 + r : 0) * in;
+
+    float acc[RW][BT];
+#pragma unroll
+    for (int r = 0; r < RW; r++)
+#pragma unroll
+        for (int b = 0; b < BT; b++) acc[r][b] = 0.0f;
+
+    for (int64_t c0 = 0; c0 < in; c0 += kChunk) {
+        const int len = int(in - c0 < kChunk ? in - c0 : kChunk);   // multiple of 8
+        // stage x[b][c0 .. c0+len) as float4s (kChunk / 4 = 64 per row)
+        for (int t = threadIdx.x; t < BT * (kChunk / 4); t += blockDim.x) {
+            const int b = t / (kChunk / 4), j4 = (t % (kChunk / 4)) * 4;
+            float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (j4 < len) v = *reinterpret_cast<const float4*>(x + int64_t(b) * in + c0 + j4);
+            *reinterpret_cast<float4*>(&xs[b][j4]) = v;
+        }
+        __syncthreads();
+        if (o0 < out) {
+#pragma unroll
+            for (int half = 0; half < 2; half++) {
+                const int j = half * 128 + lane * 4;
+                if (j < len) {
+                    float2 w01[RW], w23[RW];
+#pragma unroll
+                    for (int r = 0; r < RW; r++) {
+                        const uint2 raw = *reinterpret_cast<const uint2*>(wr[r] + c0 + j);
+                        w01[r] = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&raw.x));
+                        w23[r] = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(&raw.y));
+                    }
+#pragma unroll
+                    for (int b = 0; b < BT; b++) {
+                        const float4 xv = *reinterpret_cast<const float4*>(&xs[b][j]);
+#pragma unroll
+                        for (int r = 0; r < RW; r++)
+                            acc[r][b] += w01[r].x * xv.x + w01[r].y * xv.y + w23[r].x * xv.z + w23[r].y * xv.w;
+                    }
+                }
+            }
+        }
+        __syncthreads();
+    }
+    if (o0 >= out) return;
+#pragma unroll
+    for (int r = 0; r < RW; r++)
+#pragma unroll
+        for (int b = 0; b < BT; b++)
+            for (int off = 16; off > 0; off >>= 1)
+                acc[r][b] += __shfl_down_sync(0xffffffffu, acc[r][b], off);
+    if (lane == 0) {
+#pragma unroll
+        for (int r = 0; r < RW; r++) {
+            const int64_t o = o0 + r;
+            if (o >= out) break;
+            const float bv = bias ? __bfloat162float(bias[o]) : 0.0f;
+#pragma unroll
+            for (int b = 0; b < BT; b++)   // compile-time index: a runtime bound here sent acc to local memory
+                if (b < B) y[int64_t(b) * out + o] = acc[r][b] + bv;
+        }
     }
 }
 
@@ -454,7 +541,11 @@ void launch_gemv_batched(const float* x, const __nv_bfloat16* W, const __nv_bflo
                          int B, int64_t in, int64_t out, float* y) {
     const unsigned grid = unsigned((out + kRowsPerBlock - 1) / kRowsPerBlock);
     const int threads = kRowsPerBlock * 32;
-#define LAUNCH(BT) gemv_batched_kernel<BT><<<grid, threads>>>(x, W, bias, B, in, y, out)
+#define LAUNCH(BT) do { \
+        if (in % 8 == 0) { \
+            const unsigned g3 = unsigned((out + kRowsPerBlock * rows_per_warp<BT>() - 1) / (kRowsPerBlock * rows_per_warp<BT>())); \
+            gemv_batched_kernel<BT><<<g3, threads>>>(x, W, bias, B, in, y, out); \
+        } else gemv_batched_v2_kernel<BT><<<grid, threads>>>(x, W, bias, B, in, y, out); } while (0)
     if (B <= 1) LAUNCH(1);
     else if (B <= 2) LAUNCH(2);
     else if (B <= 4) LAUNCH(4);
