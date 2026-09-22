@@ -257,7 +257,7 @@ struct GpuBatch::Impl {
         return pool.n_free() >= BlockTable::blocks_needed(prompt_len) + 1;
     }
 
-    int64_t prefill(int slot, const std::vector<int64_t>& ids) {
+    int64_t prefill(int slot, const std::vector<int64_t>& ids, SampleParams) {
         const int64_t T = int64_t(ids.size());
         if (slot < 0 || slot >= n_slots) throw std::runtime_error("prefill: bad slot");
         if (T == 0 || T > max_seq) throw std::runtime_error("prefill: bad prompt length");
@@ -340,7 +340,9 @@ GpuBatch::~GpuBatch() = default;
 int GpuBatch::slots() const { return impl_->n_slots; }
 int64_t GpuBatch::max_seq() const { return impl_->max_seq; }
 bool GpuBatch::has_room(int64_t prompt_len) const { return impl_->has_room(prompt_len); }
-int64_t GpuBatch::prefill(int slot, const std::vector<int64_t>& prompt) { return impl_->prefill(slot, prompt); }
+int64_t GpuBatch::prefill(int slot, const std::vector<int64_t>& prompt, SampleParams sample) {
+    return impl_->prefill(slot, prompt, sample);
+}
 std::vector<int64_t> GpuBatch::step(const std::vector<StepRow>& rows) { return impl_->step(rows); }
 void GpuBatch::release(int slot) { impl_->release(slot); }
 int GpuBatch::blocks_in_use() const { return impl_->pool.n_in_use(); }

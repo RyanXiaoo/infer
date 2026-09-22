@@ -45,7 +45,7 @@ public:
     int slots() const override;
     int64_t max_seq() const override;
     bool has_room(int64_t prompt_len) const override;
-    int64_t prefill(int slot, const std::vector<int64_t>& prompt) override;
+    int64_t prefill(int slot, const std::vector<int64_t>& prompt, SampleParams sample = {}) override;
     std::vector<int64_t> step(const std::vector<StepRow>& rows) override;
     void release(int slot) override;
     int blocks_in_use() const override;

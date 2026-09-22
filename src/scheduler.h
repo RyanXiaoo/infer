@@ -23,14 +23,25 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace llm {
 
+// Per-request sampling. temperature 0 = greedy (exact argmax); otherwise the
+// engine samples logits / temperature with a per-request seeded RNG.
+struct SampleParams {
+    float temperature = 0.0f;
+    uint64_t seed = 0;
+};
+
 struct StepRow {
     int slot;
     int64_t token;   // the token to feed (the previous output)
+    SampleParams sample;
 };
 
 class BatchEngine {
@@ -42,7 +53,8 @@ public:
     virtual bool has_room(int64_t prompt_len) const = 0;
     // Runs the prompt into `slot`'s cache; returns the first generated token,
     // or -1 if the cache is out of memory (nothing is kept).
-    virtual int64_t prefill(int slot, const std::vector<int64_t>& prompt) = 0;
+    virtual int64_t prefill(int slot, const std::vector<int64_t>& prompt,
+                            SampleParams sample = {}) = 0;
     // One decode step for all rows; out[i] is rows[i]'s next token, or -1 if
     // that row could not get cache memory (its state is unchanged).
     virtual std::vector<int64_t> step(const std::vector<StepRow>& rows) = 0;
@@ -57,13 +69,20 @@ struct Request {
     std::vector<int64_t> prompt;
     int max_new = 32;
     int64_t arrival_step = 0;   // scheduler step at which it may be admitted
+    SampleParams sample;
+    // Per-request stop token; kUseDefault = the scheduler config's eos_id.
+    static constexpr int64_t kUseDefault = INT64_MIN;
+    int64_t eos_id = kUseDefault;
     // Set by preemption: tokens generated before eviction. On re-admission the
     // prompt already includes them and generation resumes after them.
     std::vector<int64_t> generated_so_far;
 };
 
+enum class StopReason : uint8_t { kEos = 0, kMaxNew = 1, kCacheFull = 2, kCancelled = 3 };
+
 struct Completed {
     int64_t id = 0;
+    StopReason reason = StopReason::kEos;
     std::vector<int64_t> tokens;   // generated ids, including eos if hit
     int64_t admitted_step = 0, finished_step = 0;
     double admitted_ms = 0, first_token_ms = 0, finished_ms = 0;   // wall clock
@@ -110,13 +129,18 @@ struct SchedulerConfig {
     bool continuous = true;    // false = static batching baseline
     int64_t eos_id = -1;       // -1 = never stop on eos
     size_t event_capacity = 1 << 16;
+    // Called from step() on the scheduler's thread: every generated token
+    // (including the prefill's first token) and every completion.
+    std::function<void(int64_t request_id, int64_t token)> on_token;
+    std::function<void(const Completed&)> on_done;
 };
 
 class Scheduler {
 public:
     Scheduler(BatchEngine& engine, SchedulerConfig cfg);
 
-    void submit(Request r);            // enqueue (FIFO)
+    void submit(Request r);            // enqueue (FIFO); safe from any thread
+    void cancel(int64_t request_id);   // safe from any thread; takes effect next step
     bool idle() const;                 // no queued and no active requests
     // Runs retire -> admit -> decode once. Returns the number of rows decoded.
     int step();
@@ -141,7 +165,9 @@ private:
     };
     BatchEngine& eng_;
     SchedulerConfig cfg_;
+    mutable std::mutex mu_;            // guards queue_ and cancelled_
     std::deque<Request> queue_;
+    std::unordered_set<int64_t> cancelled_;
     std::vector<Active> slots_;
     std::vector<Completed> completed_;
     EventRing events_;
@@ -152,7 +178,8 @@ private:
 
     double now_ms() const;
     void admit();
-    void retire(int slot, uint8_t reason);
+    void retire(int slot, StopReason reason);
+    void finish_unstarted(Request r, StopReason reason);
     // Evicts the most recently admitted active request back to the queue
     // front (recompute-style preemption). Returns its slot, or -1 if none.
     int preempt_one();

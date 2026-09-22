@@ -54,7 +54,7 @@ struct FakeEngine : llm::BatchEngine {
         s.emitted++;
         return s.emitted > len.at(s.id) ? kEos : s.id;
     }
-    int64_t prefill(int slot, const std::vector<int64_t>& prompt) override {
+    int64_t prefill(int slot, const std::vector<int64_t>& prompt, llm::SampleParams) override {
         if (!has_room(int64_t(prompt.size()))) return -1;
         state[slot] = SlotState{prompt.at(0), int(prompt.size()) - 3, int(prompt.size()) + 1, true};
         return next(slot);
@@ -177,6 +177,31 @@ void test_preemption() {
                 (long long)sch.steps());
 }
 
+void test_cancel() {
+    FakeEngine eng(2, 256);
+    eng.len = {{10, 50}, {20, 50}, {30, 2}};
+    llm::SchedulerConfig cfg;
+    cfg.eos_id = kEos;
+    std::vector<std::pair<int64_t, int64_t>> seen;
+    cfg.on_token = [&](int64_t id, int64_t tok) { seen.push_back({id, tok}); };
+    llm::Scheduler sch(eng, cfg);
+    for (int64_t id : {10, 20, 30}) sch.submit(req(id, 100));
+    sch.step(); sch.step();               // 10 and 20 admitted and decoding
+    sch.cancel(10);                       // active: retires at the start of the next step
+    sch.cancel(30);                       // queued: dropped without prefill
+    sch.run_until_idle();
+    std::map<int64_t, const llm::Completed*> by_id;
+    for (const auto& c : sch.completed()) by_id[c.id] = &c;
+    CHECK(by_id[10]->reason == llm::StopReason::kCancelled && by_id[10]->tokens.size() == 3,
+          "10 cancelled after 3 tokens (got %zu)", by_id[10]->tokens.size());
+    CHECK(by_id[10]->finished_step == 2, "10 retired at step %lld", (long long)by_id[10]->finished_step);
+    CHECK(by_id[30]->reason == llm::StopReason::kCancelled && by_id[30]->tokens.empty(), "30 never ran");
+    CHECK(by_id[20]->reason == llm::StopReason::kEos && by_id[20]->tokens.size() == 51,
+          "20 ran to its eos (50 tokens + eos), got %zu", by_id[20]->tokens.size());
+    CHECK(eng.used_blocks() == 0, "leak after cancels");
+    CHECK(seen.size() == 3 + 51, "on_token calls: %zu", seen.size());
+}
+
 void test_event_ring() {
     FakeEngine eng(1, 256);
     eng.len = {{7, 2}};
@@ -200,6 +225,7 @@ int main() {
     test_outputs_and_timing(false);
     test_arrivals_and_max_new();
     test_preemption();
+    test_cancel();
     test_event_ring();
     if (failures == 0) { std::printf("test_scheduler: all checks passed\n"); return 0; }
     std::printf("test_scheduler: %d FAILURES\n", failures);
