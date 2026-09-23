@@ -1,0 +1,14 @@
+{
+ "what": "Stage 6 serving sweep: throughput vs latency over batch size, continuous vs static batching",
+ "model": "Qwen2.5-1.5B-Instruct", "gemm": "mine",
+ "requests": 32, "tokens_generated": 1961, "max_new_base": 64, "max_seq": 192, "budget_mb": 0, "bytes_per_block": 917504, "prefix": 0, "prefix_cache": true, "graphs": true, "attn": "split",
+ "draft": "Qwen2.5-0.5B-Instruct", "draft_quant": "int8", "spec_k": 1,
+ "prompts": "golden prompts 0-4 cycled, all submitted at t=0, eos disabled",
+ "rows": [
+  {"slots": 1, "mode": "continuous", "tok_s": 222.29, "wall_ms": 8821.79, "step_ms": 8.35397, "token_latency_ms": 4.34097, "request_p50_ms": 4718.11, "request_p95_ms": 8367.91, "ttft_p50_ms": 4390.28, "steps": 1056, "blocks_total": 12, "blocks_peak": 7, "preemptions": 0, "acceptance": 0.840114},
+  {"slots": 2, "mode": "continuous", "tok_s": 346.592, "wall_ms": 5657.94, "step_ms": 10.4971, "token_latency_ms": 5.56901, "request_p50_ms": 3022.6, "request_p95_ms": 5402.71, "ttft_p50_ms": 2606.9, "steps": 539, "blocks_total": 24, "blocks_peak": 12, "preemptions": 0, "acceptance": 0.840114},
+  {"slots": 4, "mode": "continuous", "tok_s": 461.446, "wall_ms": 4249.69, "step_ms": 15.5666, "token_latency_ms": 8.36995, "request_p50_ms": 2408.83, "request_p95_ms": 4124.67, "ttft_p50_ms": 1782.52, "steps": 273, "blocks_total": 48, "blocks_peak": 18, "preemptions": 0, "acceptance": 0.840114},
+  {"slots": 8, "mode": "continuous", "tok_s": 689.654, "wall_ms": 2843.46, "step_ms": 19.7462, "token_latency_ms": 10.7788, "request_p50_ms": 1774.7, "request_p95_ms": 2791.57, "ttft_p50_ms": 969.519, "steps": 144, "blocks_total": 96, "blocks_peak": 35, "preemptions": 0, "acceptance": 0.840114},
+  {"slots": 16, "mode": "continuous", "tok_s": 790.369, "wall_ms": 2481.12, "step_ms": 28.8502, "token_latency_ms": 17.0554, "request_p50_ms": 1777.96, "request_p95_ms": 2416.6, "ttft_p50_ms": 710.205, "steps": 86, "blocks_total": 192, "blocks_peak": 55, "preemptions": 0, "acceptance": 0.840114}
+ ]
+}
