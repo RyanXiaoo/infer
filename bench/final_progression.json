@@ -1,0 +1,18 @@
+{"what": "Final progression: each stage's decode path from the committed binaries, 64 new tokens, locked clocks",
+ "date": "2026-09-22", "rows": [
+  {"stage": "Stage 3  naive kernels, no cache", "slots": 1, "tok_s": 2.941, "how": "main_generate 0 64 gpu naive off"},
+  {"stage": "Stage 4  KV cache", "slots": 1, "tok_s": 12.671, "how": "main_generate 0 64 gpu naive on naive unfused"},
+  {"stage": "Stage 5  kernels + fusion", "slots": 1, "tok_s": 183.134, "how": "main_generate 0 64 gpu mine on par fused"},
+  {"stage": "Stage 6  batching, 1 slot", "slots": 1, "tok_s": 131.4, "acceptance": 0, "how": " main_serve_bench slots=1 graphs=0"},
+  {"stage": "Stage 6  batching, 16 slots", "slots": 16, "tok_s": 1175.5, "acceptance": 0, "how": " main_serve_bench slots=16 graphs=0"},
+  {"stage": "Stage 8  graphs + split attn, 1", "slots": 1, "tok_s": 176.3, "acceptance": 0, "how": " main_serve_bench slots=1 graphs=1"},
+  {"stage": "Stage 8  graphs + split attn, 16", "slots": 16, "tok_s": 1307.9, "acceptance": 0, "how": " main_serve_bench slots=16 graphs=1"},
+  {"stage": "Stage 10 int8, 1", "slots": 1, "tok_s": 240.9, "acceptance": 0, "how": "LLM_QUANT=int8 main_serve_bench slots=1 graphs=1"},
+  {"stage": "Stage 10 int8, 16", "slots": 16, "tok_s": 822.7, "acceptance": 0, "how": "LLM_QUANT=int8 main_serve_bench slots=16 graphs=1"},
+  {"stage": "Stage 10 int4, 1", "slots": 1, "tok_s": 316.1, "acceptance": 0, "how": "LLM_QUANT=int4 main_serve_bench slots=1 graphs=1"},
+  {"stage": "Stage 11 speculative, int8 draft k=1, 1", "slots": 1, "tok_s": 224.0, "acceptance": 84, "how": "LLM_DRAFT=Qwen2.5-0.5B-Instruct LLM_DRAFT_QUANT=int8 main_serve_bench slots=1 graphs=1 spec_k=1"},
+  {"stage": "7B int4, 1", "slots": 1, "tok_s": 126.1, "acceptance": 0, "how": "LLM_QUANT=int4 main_serve_bench slots=1 graphs=1 max_seq=512"},
+  {"stage": "7B int8, 1", "slots": 1, "tok_s": 81.7, "acceptance": 0, "how": "LLM_QUANT=int8 main_serve_bench slots=1 graphs=1 max_seq=512"},
+  {"stage": "7B int8 speculative, int8 draft k=1, 1", "slots": 1, "tok_s": 120.8, "acceptance": 86, "how": "LLM_QUANT=int8 LLM_DRAFT=Qwen2.5-0.5B-Instruct LLM_DRAFT_QUANT=int8 main_serve_bench slots=1 graphs=1 max_seq=512 spec_k=1"},
+  {"stage": "7B int8, 16", "slots": 16, "tok_s": 284.0, "acceptance": 0, "how": "LLM_QUANT=int8 main_serve_bench slots=16 graphs=1 max_seq=512"}
+ ]}

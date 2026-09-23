@@ -6,13 +6,13 @@
 # clocks locked (tools/lock_clocks.sh lock from the Mac). Each row re-runs the
 # path that stage introduced, so the table shows what each stage bought:
 #
-#   Stage 3  naive GPU kernels, full recompute each token   main_generate cache=off gemm=naive
-#   Stage 4  KV cache                                       main_generate cache=on  gemm=naive attn=naive step=unfused
-#   Stage 5  row-parallel GEMV, parallel attention, fusion  main_generate cache=on  gemm=mine  attn=par   step=fused
+#   Stage 3  naive GPU kernels, full recompute each token   main_generate .. naive off
+#   Stage 4  KV cache                                       main_generate .. naive on naive unfused
+#   Stage 5  row-parallel GEMV, parallel attention, fusion  main_generate .. mine on par fused
 #   Stage 6  continuous batching (paged since Stage 7)      main_serve_bench slots=1,16 graphs=0
 #   Stage 8  CUDA graphs + flash-decoding attention         main_serve_bench slots=1,16 graphs=1
 #   Stage 10 int8 / int4 weights                            LLM_QUANT=int8|int4
-#   Stage 11 speculative decoding (0.5B int4 draft)         LLM_DRAFT=... spec_k=K
+#   Stage 11 speculative decoding (0.5B int8 draft, k=1)   LLM_DRAFT=... spec_k=1
 #   plus the 7B int4/int8 rows that only exist because of Stage 10.
 #
 # Writes bench/final_progression.json and prints the README table.
@@ -27,13 +27,13 @@ OUT=bench/final_progression.json
 TMP=bench/raw/final; mkdir -p "$TMP"
 ROWS=()
 
-gen() {   # gen <label> <main_generate args...>  -> single-sequence tok/s
+gen() {   # gen <label> <gemm> <cache> <attn> <step>  -> single-sequence tok/s (main_generate is positional)
     local label=$1; shift
     local toks
-    toks=$(LLM_MODEL=$MODEL ./build/main_generate prompt=0 n_new=$N_NEW device=gpu "$@" 2>/dev/null \
+    toks=$(LLM_MODEL=$MODEL ./build/main_generate 0 $N_NEW gpu "$@" 2>/dev/null \
            | sed -n 's/.*= \([0-9.]*\) tok\/s/\1/p')
     printf '%-44s %8s tok/s (1 seq)\n' "$label" "$toks"
-    ROWS+=("{\"stage\": \"$label\", \"slots\": 1, \"tok_s\": $toks, \"how\": \"main_generate $*\"}")
+    ROWS+=("{\"stage\": \"$label\", \"slots\": 1, \"tok_s\": ${toks:-null}, \"how\": \"main_generate 0 $N_NEW gpu $*\"}")
 }
 serve() {   # serve <label> <slots> <env...> -- <bench args...>  -> tok/s from the JSON row
     local label=$1 slots=$2; shift 2
@@ -53,9 +53,9 @@ serve() {   # serve <label> <slots> <env...> -- <bench args...>  -> tok/s from t
 }
 
 echo "model $MODEL, $N_NEW new tokens per sequence"
-gen   "Stage 3  naive kernels, no cache"            cache=off gemm=naive
-gen   "Stage 4  KV cache"                           cache=on gemm=naive attn=naive step=unfused
-gen   "Stage 5  kernels + fusion"                   cache=on gemm=mine attn=par step=fused
+gen   "Stage 3  naive kernels, no cache"            naive off
+gen   "Stage 4  KV cache"                           naive on naive unfused
+gen   "Stage 5  kernels + fusion"                   mine on par fused
 serve "Stage 6  batching, 1 slot"        1  -- graphs=0
 serve "Stage 6  batching, 16 slots"      16 -- graphs=0
 serve "Stage 8  graphs + split attn, 1"  1  -- graphs=1
@@ -63,11 +63,12 @@ serve "Stage 8  graphs + split attn, 16" 16 -- graphs=1
 serve "Stage 10 int8, 1"                 1  LLM_QUANT=int8 -- graphs=1
 serve "Stage 10 int8, 16"                16 LLM_QUANT=int8 -- graphs=1
 serve "Stage 10 int4, 1"                 1  LLM_QUANT=int4 -- graphs=1
-serve "Stage 11 speculative int4 target, k=2, 1" 1 LLM_QUANT=int4 LLM_DRAFT=$DRAFT LLM_DRAFT_QUANT=int4 -- graphs=1 spec_k=2
+serve "Stage 11 speculative, int8 draft k=1, 1" 1 LLM_DRAFT=$DRAFT LLM_DRAFT_QUANT=int8 -- graphs=1 spec_k=1
 if [ -f models/Qwen2.5-7B-Instruct/model.q4.llmq ]; then
     MODEL=Qwen2.5-7B-Instruct
     serve "7B int4, 1"                    1  LLM_QUANT=int4 -- graphs=1 max_seq=512
-    serve "7B int4 speculative k=4, 1"    1  LLM_QUANT=int4 LLM_DRAFT=$DRAFT LLM_DRAFT_QUANT=int4 -- graphs=1 max_seq=512 spec_k=4
+    serve "7B int8, 1"                    1  LLM_QUANT=int8 -- graphs=1 max_seq=512
+    serve "7B int8 speculative, int8 draft k=1, 1" 1 LLM_QUANT=int8 LLM_DRAFT=$DRAFT LLM_DRAFT_QUANT=int8 -- graphs=1 max_seq=512 spec_k=1
     serve "7B int8, 16"                   16 LLM_QUANT=int8 -- graphs=1 max_seq=512
 fi
 

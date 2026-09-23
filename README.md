@@ -38,19 +38,27 @@ reference logits at every layer; performance is measured under locked clocks wit
 
 All numbers: RTX 5070 Ti, locked clocks, greedy unless stated, from the records in `bench/`.
 
-### Single-sequence decode, Qwen2.5-1.5B (tokens per second)
+### The progression, Qwen2.5-1.5B (tokens per second, `tools/bench_all.sh`)
 
-| decode path                                                     | 1.5B      | 0.5B  |
-| --------------------------------------------------------------- | --------- | ----- |
-| naive CUDA kernels, full recompute per token                    |           | 2.9   |
-| + KV cache                                                      | 7.0       | 15.7  |
-| + one-block-per-head cached attention                           | 17.0      | 36.5  |
-| + row-parallel GEMV (coalesced bf16 loads, warp reduce)         | 126.8     | 204.7 |
-| + fused decode step, hoisted host work                          | 178.5     | 361.4 |
-| same engine, matmuls routed through cuBLAS fp32 (yardstick)     | 94.3      | 164.9 |
-| + int8 weights (group-wise, dequantized in registers)           | 245       | 435   |
-| + int4 weights                                                  | 313       | 467   |
-| + speculative decoding, 0.5B int8 draft, k=1 (bf16 target)      | 224       |       |
+Each row re-runs the decode path that step introduced, from the committed binaries, on one
+model and one card (`bench/final_progression.json`):
+
+| decode path                                                      | 1 sequence | 16 sequences |
+| ---------------------------------------------------------------- | ---------- | ------------ |
+| naive CUDA kernels, full recompute per token                     | 2.9        |              |
+| + KV cache                                                       | 12.7       |              |
+| + coalesced row-parallel GEMV, one-block-per-head attention, fused decode step | 183 |     |
+| + batched decode and continuous batching (paged KV cache)        | 131        | 1176         |
+| + CUDA-graph replay and flash-decoding attention                 | 176        | 1308         |
+| + int8 weights (group-wise, dequantized in registers)            | 241        | 823          |
+| + int4 weights                                                   | 316        |              |
+| + speculative decoding (0.5B int8 draft, k=1, bf16 target)       | 224        |              |
+| Qwen2.5-7B int4 / int8                                           | 126 / 82   | 284 (int8)   |
+| Qwen2.5-7B int8 + speculative decoding                           | 121        |              |
+
+The same engine with its matmuls routed through cuBLAS fp32 decodes at 94 tok/s single-sequence
+(the yardstick reads twice the bytes). On 0.5B the single-sequence figure is 361 tok/s bf16 and
+2785 tok/s at 32 sequences.
 
 ### Serving throughput by concurrent sequences (continuous batching, generated tokens per second)
 
