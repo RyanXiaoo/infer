@@ -317,7 +317,7 @@ void launch_gemv_batched_q(const float* x, const QuantView& W, const __nv_bfloat
     // 1.5B and 7B with kernels/bench/gemv_width_bench; LLM_Q_DIRECT_MAX
     // overrides for experiments.
     static const int env_max = std::getenv("LLM_Q_DIRECT_MAX") ? std::atoi(std::getenv("LLM_Q_DIRECT_MAX")) : -1;
-    const int direct_max = env_max >= 0 ? env_max : (W.kind == QuantKind::kInt8 ? 4 : 2);
+    const int direct_max = env_max >= 0 ? env_max : 4;   // both dtypes: direct through B = 4
 #define LAUNCH(BT, KIND) do { \
         const unsigned g = unsigned((out + kRowsPerBlock * q_rows_per_warp<BT>() - 1) / (kRowsPerBlock * q_rows_per_warp<BT>())); \
         gemv_batched_q_kernel<BT, KIND><<<g, threads>>>(x, W, bias, B, in, y, out); } while (0)
