@@ -22,7 +22,8 @@ reference logits at every layer; performance is measured under locked clocks wit
   budget), CUDA-graph replay of the decode step and flash-decoding attention.
 - **OpenAI-compatible HTTP server** with SSE streaming, seeded temperature sampling on the device,
   and cancellation that returns a disconnected client's KV blocks within one scheduler step
-  (623 tok/s over HTTP at 16 clients; half the streams dropped mid-flight leaves 0 blocks in use).
+  (1148 tok/s over HTTP at 16 clients, 53 ms time-to-first-token; half the streams dropped
+  mid-flight leaves 0 blocks in use).
 - **Quantization: int8 is lossless (perplexity 8.339 -> 8.345), and Qwen2.5-7B runs on the 16 GB
   card** at int4 (4.0 GB of weights, 126 tok/s single-sequence) and int8 (271 tok/s at 16 slots).
 - **Speculative decoding** with a 0.5B draft: 7B int8 goes 82 -> 120 tok/s single-sequence, with
@@ -65,6 +66,7 @@ The same engine with its matmuls routed through cuBLAS fp32 decodes at 94 tok/s 
 | model / weights   | 1   | 4    | 8    | 16       | 32       |
 | ----------------- | --- | ---- | ---- | -------- | -------- |
 | 1.5B bf16         | 178 | 554  | 892  | 1339     | **1361** |
+| 1.5B bf16, over HTTP (SSE, 16 clients) | | | | 1148 | |
 | 1.5B int8         | 245 | 614  | 540  | 827      | **1083** |
 | 1.5B int4         | 311 | 676  | 756  | **899**  | 845      |
 | 0.5B bf16         | 368 | 1099 | 1743 | 2492     | **2785** |
