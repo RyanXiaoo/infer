@@ -154,6 +154,8 @@ def main():
     ap.add_argument("--whole-run", action="store_true",
                     help="no window: first kernel to last kernel")
     ap.add_argument("--top", type=int, default=12, help="rows per table")
+    ap.add_argument("--gpu-only", action="store_true",
+                    help="print only the GPU kernel table and the per-token totals")
     ap.add_argument("--json", type=Path, help="also write a bench/ record here")
     ap.add_argument("--label", default="", help="free text stored in the record "
                     "(model, prompt, gemm path, flags)")
@@ -203,7 +205,7 @@ def main():
     print(f"{'  library kernels':34s} {(busy_ns - mine_ns) / 1e9:8.4f} "
           f"{100 * (busy_ns - mine_ns) / busy_ns:6.1f}")
 
-    if apis:
+    if apis and not args.gpu_only:
         print(f"\n{'host CUDA API':34s} {'total s':>8s} {'calls':>9s} {'avg us':>8s} "
               f"{'ms/token':>9s}")
         for a in apis[:6]:
@@ -211,7 +213,7 @@ def main():
                   f"{a['total_ns'] / a['calls'] / 1e3:8.1f} {ms(a['total_ns']) / n:9.3f}")
         print("  (blocking calls such as cudaMemcpy include time spent waiting for the GPU)")
 
-    for c in copies:
+    for c in ([] if args.gpu_only else copies):
         print(f"memcpy {c['kind']}: {c['copies']} copies, {c['bytes'] / 1e6:.1f} MB, "
               f"{c['total_ns'] / 1e9:.4f} s")
 
