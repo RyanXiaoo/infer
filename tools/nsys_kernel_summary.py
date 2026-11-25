@@ -184,6 +184,13 @@ def main():
     busy_ns = sum(k["total_ns"] for k in kernels)
     launches = sum(k["launches"] for k in kernels)
     ms = lambda ns: ns / 1e6
+    # The check from the docstring: kernel rows are the only thing busy_ns is made
+    # of, and busy time cannot exceed the wall time of the window. A number that
+    # violates this was misread (a window span taken for a kernel total, or a
+    # window that cuts through a token).
+    if busy_ns > span_ns:
+        sys.exit(f"GPU busy {busy_ns / 1e9:.3f} s exceeds the window {span_ns / 1e9:.3f} s: "
+                 "the window is wrong or a kernel total was misread")
 
     print(f"{source}   decode window {span_ns / 1e9:.3f} s, {n} tokens"
           f"{'  [' + label + ']' if label else ''}\n")
