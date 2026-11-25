@@ -5,7 +5,12 @@ parallel attention kernel (Stage 5 phase 1), on Qwen2.5-0.5B.
 The naive cached-attention kernel's cost grows with the number of cached tokens,
 so decode slowed down as the reply got longer on both gemm paths. The parallel
 kernel removed that: the "after" lines are flat. GEMV was still the naive kernel
-in every row here, which is why the "my kernels" lines barely move up.
+in every row here, which is why the "my kernels" lines barely move.
+
+Plotted as ms per token rather than tok/s so that an added cost is an added
+height: the naive attention kernel adds the same ~30 ms/token on both paths
+between a 32-token and a 256-token reply, so the two "before" lines are
+parallel. In tok/s (the reciprocal) the same data looks like different slopes.
 
 Sources: bench/stage5_decode_ladder.json (medians, locked clocks) for three of
 the four series. The cuBLAS "after" pair is from single runs taken at the phase 1
@@ -41,11 +46,11 @@ def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "bench" / "stage5_attention_fix_0.5B.png"
     series = [
         # label, (tok/s at 32, tok/s at 256), color, linestyle
-        ("my kernels, before", ladder("0.5B gemm=naive attn=naive step=unfused n=32",
+        ("my kernels, attention naive", ladder("0.5B gemm=naive attn=naive step=unfused n=32",
                                       "0.5B gemm=naive attn=naive step=unfused n=256"), BLUE, "--"),
         ("my kernels, attention fixed", ladder("0.5B gemm=naive attn=par step=unfused n=32",
                                                "0.5B gemm=naive attn=par step=unfused n=256"), BLUE, "-"),
-        ("cuBLAS path, before", ladder("0.5B gemm=cublas attn=naive step=unfused n=32",
+        ("cuBLAS path, attention naive", ladder("0.5B gemm=cublas attn=naive step=unfused n=32",
                                        "0.5B gemm=cublas attn=naive step=unfused n=256"), ORANGE, "--"),
         ("cuBLAS path, attention fixed", (98.7, 129.9), ORANGE, "-"),   # single runs, see docstring
     ]
@@ -56,21 +61,34 @@ def main():
     ax.set_facecolor(SURFACE)
 
     x = [0, 1]
-    for label, (y32, y256), color, ls in series:
+    pts = [(label, 1e3 / t32, 1e3 / t256, color, ls) for label, (t32, t256), color, ls in series]
+    for label, y32, y256, color, ls in pts:      # tok/s -> ms per token
         before = ls == "--"
         ax.plot(x, [y32, y256], color=color, lw=2, ls=ls, marker="o", ms=7,
                 markerfacecolor=SURFACE if before else color, markeredgecolor=color,
                 markeredgewidth=1.8, label=label, zorder=3)
-        ax.annotate(f"{y32:.0f}", (0, y32), xytext=(-8, 0), textcoords="offset points",
-                    ha="right", va="center", color=INK_2, fontsize=10)
-        ax.annotate(f"{y256:.0f}", (1, y256), xytext=(8, 0), textcoords="offset points",
-                    ha="left", va="center", color=INK_2, fontsize=10)
+    # value labels; push apart any two at the same x that would sit on each other
+    for xi, side in ((0, "left"), (1, "right")):
+        col = sorted((pt[1 + xi], pt) for pt in pts)
+        offsets = {}
+        prev = None
+        for y, pt in col:
+            dy = 0
+            if prev is not None and y - prev < 3.5:
+                dy = (prev + 3.5) - y
+            offsets[pt[0]] = y + dy
+            prev = y + dy
+        for y, pt in col:
+            ax.annotate(f"{y:.0f}ms", (xi, offsets[pt[0]]),
+                        xytext=(-8 if side == "left" else 8, 0), textcoords="offset points",
+                        ha="right" if side == "left" else "left", va="center",
+                        color=INK_2, fontsize=10)
 
     ax.set_xlim(-0.25, 1.25)
     ax.set_xticks(x)
     ax.set_xticklabels(["32-token reply", "256-token reply"], color=INK)
-    ax.set_ylim(0, 145)
-    ax.set_ylabel("average decode speed, tok/s", color=INK)
+    ax.set_ylim(0, 72)
+    ax.set_ylabel("average cost per token, ms", color=INK)
     ax.yaxis.grid(True, color=GRID, lw=0.8)
     ax.set_axisbelow(True)
     for side in ("top", "right", "left"):
@@ -79,7 +97,7 @@ def main():
     ax.tick_params(axis="y", colors=INK_2, length=0)
     ax.tick_params(axis="x", colors=INK, length=0)
 
-    ax.set_title("Only the attention kernel changed. GEMV is still the naive kernel in every line.",
+    ax.set_title("Dashed to solid: only attention changed. Blue to orange: only the matmuls.",
                  loc="left", color=INK, fontsize=11, pad=12)
     leg = ax.legend(loc="upper left", frameon=False, fontsize=9.5, labelcolor=INK_2, ncol=2,
                     handlelength=2.2, columnspacing=1.5)
