@@ -20,7 +20,10 @@ must be <= the window span. If a number quoted somewhere does not fit inside
 those two totals, it was misread.
 
 --json writes the same numbers as a bench/ record (the .sqlite/.nsys-rep
-files are gitignored; the JSON is what gets committed).
+files are gitignored; the JSON is what gets committed). --from-json re-prints
+a committed record in this same layout, so the tables can be reproduced from
+the repo without the capture:
+    tools/nsys_kernel_summary.py --from-json bench/stage5_baseline_profile_mine.json
 """
 
 import argparse
@@ -125,11 +128,26 @@ def git_commit():
         return None, None
 
 
+def record_rows(rec):
+    """Rebuild the row lists kernel_rows/api_rows/memcpy_rows produce from a --json record."""
+    n = rec["tokens"]
+    kernels = [{"name": k["name"], "mine": k["mine"], "launches": k["launches"],
+                "total_ns": round(k["total_s"] * 1e9)} for k in rec["kernels"]]
+    apis = [{"name": a["name"], "calls": a["calls"], "total_ns": round(a["total_s"] * 1e9)}
+            for a in rec["host_api"]]
+    copies = [{"kind": c["kind"], "copies": c["copies"], "bytes": round(c["mb"] * 1e6),
+               "total_ns": round(c["total_s"] * 1e9)} for c in rec["memcpy"]]
+    span_ns = round(rec["per_token_ms"]["window"] * 1e6 * n)
+    return kernels, apis, copies, n, span_ns, rec["source"], rec.get("label", "")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("sqlite", type=Path, help="nsys sqlite export")
-    ap.add_argument("--tokens", type=int, required=True,
+    ap.add_argument("sqlite", type=Path, nargs="?", help="nsys sqlite export")
+    ap.add_argument("--tokens", type=int,
                     help="decode steps in the capture (n_new), for per-token columns")
+    ap.add_argument("--from-json", type=Path, metavar="RECORD",
+                    help="re-print a committed bench/ record instead of reading a capture")
     ap.add_argument("--marker", default="attention_cached_kernel",
                     help="fallback window start when there is no memcpy trace: "
                          "a kernel that only runs during decode")
@@ -141,24 +159,32 @@ def main():
                     "(model, prompt, gemm path, flags)")
     args = ap.parse_args()
 
-    db = sqlite3.connect(f"file:{args.sqlite}?mode=ro", uri=True)
-    if args.whole_run:
-        t0, t1 = db.execute(f"SELECT MIN(start), MAX(end) FROM {KERNELS}").fetchone()
+    if args.from_json:
+        if args.json:
+            sys.exit("--from-json re-prints a record; it does not write one")
+        rec = json.loads(args.from_json.read_text())
+        kernels, apis, copies, n, span_ns, source, label = record_rows(rec)
     else:
-        t0, t1 = decode_window(db, args.tokens, args.marker)
+        if args.sqlite is None or args.tokens is None:
+            ap.error("a .sqlite export and --tokens are required (or use --from-json)")
+        db = sqlite3.connect(f"file:{args.sqlite}?mode=ro", uri=True)
+        if args.whole_run:
+            t0, t1 = db.execute(f"SELECT MIN(start), MAX(end) FROM {KERNELS}").fetchone()
+        else:
+            t0, t1 = decode_window(db, args.tokens, args.marker)
+        kernels = kernel_rows(db, t0, t1)
+        apis = api_rows(db, t0, t1)
+        copies = memcpy_rows(db, t0, t1)
+        n = args.tokens
+        span_ns = t1 - t0
+        source, label = args.sqlite.name, args.label
 
-    kernels = kernel_rows(db, t0, t1)
-    apis = api_rows(db, t0, t1)
-    copies = memcpy_rows(db, t0, t1)
-
-    n = args.tokens
-    span_ns = t1 - t0
     busy_ns = sum(k["total_ns"] for k in kernels)
     launches = sum(k["launches"] for k in kernels)
     ms = lambda ns: ns / 1e6
 
-    print(f"{args.sqlite.name}   decode window {span_ns / 1e9:.3f} s, {n} tokens"
-          f"{'  [' + args.label + ']' if args.label else ''}\n")
+    print(f"{source}   decode window {span_ns / 1e9:.3f} s, {n} tokens"
+          f"{'  [' + label + ']' if label else ''}\n")
 
     print(f"{'GPU kernel':34s} {'total s':>8s} {'%GPU':>6s} {'launches':>9s} "
           f"{'avg us':>8s} {'ms/token':>9s}")
